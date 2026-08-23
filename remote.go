@@ -1,6 +1,6 @@
-// The AWS-side half of the proxy: a public mTLS listener that accepts the
+// The remote half of the proxy: a public mTLS listener that accepts the
 // home tunnel connection on TunnelPath and forwards every other request
-// through it to opencode running on the Mac.
+// through it to opencode running locally.
 package main
 
 import (
@@ -29,6 +29,7 @@ type RemoteServer struct {
 	log  *log.Logger
 
 	proxy *httputil.ReverseProxy
+	srv   *http.Server
 }
 
 func NewRemoteServer(opts RemoteOptions) *RemoteServer {
@@ -62,23 +63,23 @@ func NewRemoteServer(opts RemoteOptions) *RemoteServer {
 			http.Error(w, "no tunnel connected", http.StatusServiceUnavailable)
 		},
 	}
+	s.srv = &http.Server{
+		Addr:      opts.Addr,
+		TLSConfig: opts.TLS,
+		Handler:   remoteWithVersionHeader(http.HandlerFunc(s.handle)),
+	}
 	return s
 }
 
 func (s *RemoteServer) ListenAndServe(ctx context.Context) error {
-	srv := &http.Server{
-		Addr:      s.opts.Addr,
-		TLSConfig: s.opts.TLS,
-		Handler:   remoteWithVersionHeader(http.HandlerFunc(s.handle)),
-	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
+		s.srv.Shutdown(shutdownCtx)
 	}()
 	// Certificates are already embedded in TLSConfig, so no cert/key file args.
-	if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+	if err := s.srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil

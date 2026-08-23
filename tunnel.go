@@ -27,13 +27,27 @@ func tunnelYamuxConfig() *yamux.Config {
 	return c
 }
 
-// DialTunnel's caller owns the returned session's lifetime and must Close it.
-func DialTunnel(ctx context.Context, remoteURL string, tlsConf *tls.Config) (*yamux.Session, error) {
-	httpClient := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsConf},
+// tunnelDialerFactory builds a fresh http.Client for each dial attempt, since
+// LocalClient.Run calls DialTunnel repeatedly across reconnects and a client
+// with a broken Transport must not be reused.
+type tunnelDialerFactory struct {
+	tlsConf *tls.Config
+}
+
+func newTunnelDialerFactory(tlsConf *tls.Config) *tunnelDialerFactory {
+	return &tunnelDialerFactory{tlsConf: tlsConf}
+}
+
+func (f *tunnelDialerFactory) createClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: f.tlsConf},
 	}
+}
+
+// DialTunnel's caller owns the returned session's lifetime and must Close it.
+func DialTunnel(ctx context.Context, remoteURL string, dialers *tunnelDialerFactory) (*yamux.Session, error) {
 	c, _, err := websocket.Dial(ctx, remoteURL, &websocket.DialOptions{
-		HTTPClient: httpClient,
+		HTTPClient: dialers.createClient(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dial tunnel: %w", err)

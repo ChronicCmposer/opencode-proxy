@@ -1,4 +1,4 @@
-// The Mac-side half of the proxy: it dials the remote tunnel outbound,
+// The local half of the proxy: it dials the remote tunnel outbound,
 // reconnecting with backoff, and reverse-proxies every request that
 // arrives over it to opencode's local HTTP server.
 package main
@@ -24,9 +24,27 @@ type LocalOptions struct {
 }
 
 type LocalClient struct {
-	opts  LocalOptions
-	log   *log.Logger
-	proxy *httputil.ReverseProxy
+	opts    LocalOptions
+	log     *log.Logger
+	proxy   *httputil.ReverseProxy
+	dialers *tunnelDialerFactory
+	servers *localServerFactory
+	backoff *Backoff
+}
+
+// localServerFactory builds a fresh http.Server for each reconnect: Run
+// serves a new tunnel session every time, and http.Server must not be reused
+// across sessions once it has been Serve'd and stopped.
+type localServerFactory struct {
+	handler http.Handler
+}
+
+func newLocalServerFactory(handler http.Handler) *localServerFactory {
+	return &localServerFactory{handler: handler}
+}
+
+func (f *localServerFactory) createServer() *http.Server {
+	return &http.Server{Handler: f.handler}
 }
 
 func NewLocalClient(opts LocalOptions) (*LocalClient, error) {
@@ -53,16 +71,23 @@ func NewLocalClient(opts LocalOptions) (*LocalClient, error) {
 		l.Printf("opencode proxy error for %s: %v", r.URL.Path, err)
 		http.Error(w, "opencode unreachable", http.StatusBadGateway)
 	}
-	return &LocalClient{opts: opts, log: l, proxy: proxy}, nil
+	return &LocalClient{
+		opts:    opts,
+		log:     l,
+		proxy:   proxy,
+		dialers: newTunnelDialerFactory(opts.TLS),
+		servers: newLocalServerFactory(localWithVersionHeader(proxy)),
+		backoff: NewBackoff(),
+	}, nil
 }
 
 func (c *LocalClient) Run(ctx context.Context) error {
-	b := NewBackoff()
+	b := c.backoff
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.opts.TLS)
+		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialers)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !sleepCtx(ctx, b.Next()) {
@@ -73,7 +98,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
 		b.Reset()
 
-		srv := &http.Server{Handler: localWithVersionHeader(c.proxy)}
+		srv := c.servers.createServer()
 		serveErr := make(chan error, 1)
 		go func() { serveErr <- srv.Serve(sess) }()
 

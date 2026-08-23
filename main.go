@@ -26,8 +26,8 @@ func main() {
 
 func run() error {
 	var (
-		isLocal  = flag.Bool("local", false, "run the Mac-side tunnel client")
-		isRemote = flag.Bool("remote", false, "run the AWS-side tunnel server")
+		isLocal  = flag.Bool("local", false, "run the local tunnel client")
+		isRemote = flag.Bool("remote", false, "run the remote tunnel server")
 
 		caPath   = flag.String("ca", "", "path to the private CA bundle (PEM)")
 		certPath = flag.String("cert", "", "path to this endpoint's certificate (PEM)")
