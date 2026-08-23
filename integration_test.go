@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -101,15 +102,17 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		ServerName:   "127.0.0.1",
 		MinVersion:   tls.VersionTLS12,
 	}
-	client, err := NewLocalClient(LocalOptions{
-		RemoteURL:   "wss://" + remoteAddr + "/_tunnel",
-		OpencodeURL: "http://" + oc.addr,
-		TLS:         localTLS,
-	}, NewTunnelDialerFactory(localTLS))
+	proxy, err := NewLocalProxy("http://"+oc.addr, log.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetServerFactory(NewLocalServerFactory(client.Handler()))
+	dialers := NewTunnelDialerFactory(localTLS)
+	servers := NewLocalServerFactory(LocalWithVersionHeader(proxy))
+	client := NewLocalClient(LocalOptions{
+		RemoteURL:   "wss://" + remoteAddr + "/_tunnel",
+		OpencodeURL: "http://" + oc.addr,
+		TLS:         localTLS,
+	}, proxy, dialers, servers)
 	lctx, lcancel := context.WithCancel(context.Background())
 	t.Cleanup(lcancel)
 	go client.Run(lctx)

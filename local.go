@@ -47,14 +47,13 @@ func (f *LocalServerFactory) CreateServer() *http.Server {
 	return &http.Server{Handler: f.handler}
 }
 
-// NewLocalClient takes dialers rather than constructing it itself: dialers is
-// a factory, and factories are only ever constructed in main.
-func NewLocalClient(opts LocalOptions, dialers *TunnelDialerFactory) (*LocalClient, error) {
-	l := opts.Logger
-	if l == nil {
-		l = log.Default()
-	}
-	target, err := url.Parse(opts.OpencodeURL)
+// NewLocalProxy builds the reverse proxy to opencode's local HTTP server.
+// It's split out of NewLocalClient so main can build it first, wrap it in
+// LocalWithVersionHeader, and hand the result to NewLocalServerFactory —
+// letting every dependency reach NewLocalClient through its constructor
+// instead of being patched in afterward.
+func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
+	target, err := url.Parse(opencodeURL)
 	if err != nil {
 		return nil, err
 	}
@@ -73,25 +72,26 @@ func NewLocalClient(opts LocalOptions, dialers *TunnelDialerFactory) (*LocalClie
 		l.Printf("opencode proxy error for %s: %v", r.URL.Path, err)
 		http.Error(w, "opencode unreachable", http.StatusBadGateway)
 	}
+	return proxy, nil
+}
+
+// NewLocalClient takes proxy, dialers, and servers rather than constructing
+// them itself: proxy is shared with the LocalServerFactory main builds
+// around it, and dialers/servers are factories, which are only ever
+// constructed in main.
+func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers *TunnelDialerFactory, servers *LocalServerFactory) *LocalClient {
+	l := opts.Logger
+	if l == nil {
+		l = log.Default()
+	}
 	return &LocalClient{
 		opts:    opts,
 		log:     l,
 		proxy:   proxy,
 		dialers: dialers,
+		servers: servers,
 		backoff: NewBackoff(),
-	}, nil
-}
-
-// Handler returns the request handler main wraps in a LocalServerFactory;
-// main is where that factory is constructed.
-func (c *LocalClient) Handler() http.Handler {
-	return localWithVersionHeader(c.proxy)
-}
-
-// SetServerFactory wires in the LocalServerFactory main constructed. Run
-// cannot proceed until this has been called.
-func (c *LocalClient) SetServerFactory(f *LocalServerFactory) {
-	c.servers = f
+	}
 }
 
 func (c *LocalClient) Run(ctx context.Context) error {
@@ -135,7 +135,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 
 // See remoteWithVersionHeader for why pre-setting the header is safe with
 // httputil.ReverseProxy.
-func localWithVersionHeader(next http.Handler) http.Handler {
+func LocalWithVersionHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(LocalVersionHeader, Version)
 		next.ServeHTTP(w, r)
