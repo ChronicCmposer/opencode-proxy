@@ -47,7 +47,9 @@ func (f *localServerFactory) createServer() *http.Server {
 	return &http.Server{Handler: f.handler}
 }
 
-func NewLocalClient(opts LocalOptions) (*LocalClient, error) {
+// NewLocalClient takes dialers rather than constructing it itself: dialers is
+// a factory, and factories are only ever constructed in main.
+func NewLocalClient(opts LocalOptions, dialers *tunnelDialerFactory) (*LocalClient, error) {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
@@ -75,10 +77,21 @@ func NewLocalClient(opts LocalOptions) (*LocalClient, error) {
 		opts:    opts,
 		log:     l,
 		proxy:   proxy,
-		dialers: newTunnelDialerFactory(opts.TLS),
-		servers: newLocalServerFactory(localWithVersionHeader(proxy)),
+		dialers: dialers,
 		backoff: NewBackoff(),
 	}, nil
+}
+
+// Handler returns the request handler main wraps in a localServerFactory;
+// main is where that factory is constructed.
+func (c *LocalClient) Handler() http.Handler {
+	return localWithVersionHeader(c.proxy)
+}
+
+// SetServerFactory wires in the localServerFactory main constructed. Run
+// cannot proceed until this has been called.
+func (c *LocalClient) SetServerFactory(f *localServerFactory) {
+	c.servers = f
 }
 
 func (c *LocalClient) Run(ctx context.Context) error {

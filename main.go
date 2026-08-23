@@ -66,14 +66,16 @@ func runLocal(ctx context.Context, caPath, certPath, keyPath, remoteURL, opencod
 	if err != nil {
 		return err
 	}
+	dialers := newTunnelDialerFactory(tlsConf)
 	client, err := NewLocalClient(LocalOptions{
 		RemoteURL:   remoteURL,
 		OpencodeURL: opencodeURL,
 		TLS:         tlsConf,
-	})
+	}, dialers)
 	if err != nil {
 		return err
 	}
+	client.SetServerFactory(newLocalServerFactory(client.Handler()))
 	return client.Run(ctx)
 }
 
