@@ -17,6 +17,10 @@ import (
 	"syscall"
 )
 
+// Version is the build version, set via -ldflags "-X main.Version=...";
+// it falls back to "dev" for unversioned builds.
+var Version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "opencode-proxy:", err)

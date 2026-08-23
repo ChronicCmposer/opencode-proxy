@@ -79,7 +79,7 @@ func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, er
 
 // peerCert returns state's leaf peer certificate, or nil if state carries
 // none — the single place that defines what "no peer cert" means for
-// PeerOUs, PeerName, and RequireOU.
+// peerOUs, PeerName, and RequireOU.
 func peerCert(state *tls.ConnectionState) *x509.Certificate {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return nil
@@ -87,7 +87,7 @@ func peerCert(state *tls.ConnectionState) *x509.Certificate {
 	return state.PeerCertificates[0]
 }
 
-func PeerOUs(state *tls.ConnectionState) []string {
+func peerOUs(state *tls.ConnectionState) []string {
 	cert := peerCert(state)
 	if cert == nil {
 		return nil
@@ -109,8 +109,8 @@ func RequireOU(state *tls.ConnectionState, ou string) error {
 	if peerCert(state) == nil {
 		return ErrWrongRole
 	}
-	if !slices.Contains(PeerOUs(state), ou) {
-		return fmt.Errorf("%w: have %v, need %q", ErrWrongRole, PeerOUs(state), ou)
+	if !slices.Contains(peerOUs(state), ou) {
+		return fmt.Errorf("%w: have %v, need %q", ErrWrongRole, peerOUs(state), ou)
 	}
 	return nil
 }
