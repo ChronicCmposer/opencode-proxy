@@ -66,11 +66,39 @@ listens elsewhere). The `Dockerfile` cross-compiles the Go binary for
 and copies just that static binary onto `FROM scratch` — the final image has
 no shell, no package manager, nothing but `/opencode-proxy`.
 
-Publish `opencode-proxy.tar` **and** the `opencode-proxy.tar.sha256` it
-writes alongside it as GitHub Release assets, with exactly those names —
-the CloudFormation stack's `ImageTarURL` parameter defaults to
-`.../releases/latest/download/opencode-proxy.tar`, and both hosts' upgrade
-timers expect the matching `.sha256` at the same URL plus that suffix.
+### Versioning and releases
+
+Every build embeds a version — `make build`/`make test`/`make image` all
+depend on `make generate-version`, which writes `internal/version/version.go`
+from `git describe` (gitignored, regenerated every time; a plain `go build`
+without going through `make` first will fail to compile, since that file
+won't exist yet). On an exactly-tagged, clean commit this is just the tag
+(e.g. `v1.2.3`); otherwise it's `v1.2.3-4-gabcdef-dirty` — still useful for
+day-to-day dev builds.
+
+Cutting an actual release is two commands. The very first tag has to be
+created by hand (there's nothing to bump from yet):
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+After that:
+
+```sh
+make bump-version LEVEL=patch   # or minor / major — tags + pushes vX.Y.Z
+make release                    # builds opencode-proxy.tar(.sha256) for
+                                 # that exact tag and publishes a GitHub
+                                 # Release with both attached (needs `gh`)
+```
+
+`make release` refuses to run unless the tree is clean, your local branch
+matches `origin` exactly, HEAD is *exactly* the tag you just pushed, and
+that tag actually exists on `origin` — it's meant to only ever build from a
+commit someone else could check out and reproduce identically. The
+CloudFormation stack's `ImageTarURL` parameter (and both hosts' upgrade
+timers) point at `.../releases/latest/download/opencode-proxy.tar` and its
+`.sha256`, which `make release` publishes with exactly those names.
 
 ## 2. Issue certificates
 
@@ -175,10 +203,27 @@ systemctl status opencode-proxy-update   # "failed" here means an update
 systemctl list-timers opencode-proxy-update.timer   # when it next runs
 ```
 
-To publish an update: `make image`, publish the new `opencode-proxy.tar` +
-`.tar.sha256` to the GitHub release (overwriting `latest`), and wait up to
-6h — or force it immediately with `sudo systemctl start
-opencode-proxy-update` on either host.
+To publish an update: `make bump-version LEVEL=patch && make release` (see
+"Versioning and releases" in step 1), then wait up to 6h — or force it
+immediately with `sudo systemctl start opencode-proxy-update` on either
+host.
+
+### Checking versions from a response
+
+Every response carries `X-Opencode-Proxy-Remote-Version`, stamped by the
+EC2 host; a normal proxied response also carries
+`X-Opencode-Proxy-Local-Version`, stamped by the VM and passed through
+untouched (the 503-no-tunnel path only has the remote header, since no
+response ever came from local):
+
+```sh
+curl -sI --cacert pki/out/ca.crt --cert pki/out/phone.crt --key pki/out/phone.key \
+  https://code.example.com/ | grep -i x-opencode-proxy
+```
+
+Comparing the two after publishing an update confirms both hosts actually
+picked it up — the 6h timers on EC2 and the VM run independently, so
+there's a window where they can briefly disagree.
 
 ## 5. Connect from your phone
 

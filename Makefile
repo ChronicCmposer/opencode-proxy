@@ -12,24 +12,46 @@ IMAGE_NAME    := opencode-proxy
 IMAGE_PLATFORM := linux/arm64
 BUILDKIT_HOST ?= unix:///run/buildkit/buildkitd.sock
 
-.PHONY: all build test fmt vet lint image clean check-buildkitd
+.PHONY: all build test fmt vet lint image clean check-buildkitd \
+        generate-version bump-version release
 
 all: build
 
+## Writes internal/version/version.go from the current git state (see
+## scripts/generate-version.sh). Gitignored, fully generated — every entry
+## point that compiles Go code depends on this.
+generate-version:
+	scripts/generate-version.sh
+
 ## Native build of the CLI binary (host OS/ARCH) for local dev/testing.
-build:
+build: generate-version
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BINARY) ./cmd/opencode-proxy
 
-test:
+test: generate-version
 	go test ./...
 
 fmt:
 	gofmt -l .
 
-vet:
+vet: generate-version
 	go vet ./...
 
 lint: fmt vet
+
+## Cuts a new semver tag from the highest existing one and pushes it, e.g.
+## `make bump-version LEVEL=patch`. See scripts/bump-version.sh for the
+## full precondition list (clean tree, local/remote in sync, etc).
+bump-version:
+	@if [ -z "$(LEVEL)" ]; then \
+	  echo "usage: make bump-version LEVEL=major|minor|patch" >&2; exit 1; \
+	fi
+	scripts/bump-version.sh "$(LEVEL)"
+
+## Builds and publishes a GitHub Release for the exact commit HEAD is on.
+## Refuses unless HEAD is cleanly, exactly tagged and that tag is pushed —
+## run `make bump-version` first. Requires the gh CLI.
+release:
+	scripts/release.sh
 
 ## Verify buildkitd is reachable before attempting an image build; buildctl's
 ## own error on a dead socket is unhelpfully generic otherwise.
@@ -42,7 +64,7 @@ check-buildkitd:
 ## checksum file — both are published as GitHub Release assets. The
 ## checksum file is what opencode-proxy-update.timer polls every 6h on each
 ## host to detect a new version without re-downloading the full image.
-image: check-buildkitd
+image: check-buildkitd generate-version
 	BUILDKIT_HOST=$(BUILDKIT_HOST) buildctl build \
 	  --frontend dockerfile.v0 \
 	  --local context=. \

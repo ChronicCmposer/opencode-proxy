@@ -14,6 +14,10 @@ ARG TARGETARCH=arm64
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
+# internal/version/version.go is generated on the host by `make
+# generate-version` (a prerequisite of `make image`) and picked up here
+# along with the rest of internal/ — regenerating it inside the container
+# would need .git history in the build context just for a version string.
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/opencode-proxy ./cmd/opencode-proxy

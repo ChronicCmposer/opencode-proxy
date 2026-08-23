@@ -16,7 +16,16 @@ import (
 
 	"github.com/ChronicCmposer/opencode-proxy/internal/tlsconf"
 	"github.com/ChronicCmposer/opencode-proxy/internal/tunnel"
+	"github.com/ChronicCmposer/opencode-proxy/internal/version"
 )
+
+// VersionHeader is stamped on every response this side sends — proxied,
+// forbidden, or 503 alike — so a single response can show which build of
+// --remote is currently running. Local's response carries its own
+// X-Opencode-Proxy-Local-Version, which survives untouched through this
+// proxy the same way Authorization passthrough does, so a normal browser
+// response ends up carrying both.
+const VersionHeader = "X-Opencode-Proxy-Remote-Version"
 
 // Options configures a Server.
 type Options struct {
@@ -76,7 +85,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:      s.opts.Addr,
 		TLSConfig: s.opts.TLS,
-		Handler:   http.HandlerFunc(s.handle),
+		Handler:   withVersionHeader(http.HandlerFunc(s.handle)),
 	}
 	go func() {
 		<-ctx.Done()
@@ -89,6 +98,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// withVersionHeader sets VersionHeader before the wrapped handler runs.
+// Setting it up front (rather than in ReverseProxy's ModifyResponse) covers
+// every response path uniformly — proxied, 403, and 503 — and is safe to
+// pre-set: httputil.ReverseProxy only adds backend headers via copyHeader,
+// it never clears what's already on the ResponseWriter.
+func withVersionHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(VersionHeader, version.Version)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {

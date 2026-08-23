@@ -14,7 +14,14 @@ import (
 	"time"
 
 	"github.com/ChronicCmposer/opencode-proxy/internal/tunnel"
+	"github.com/ChronicCmposer/opencode-proxy/internal/version"
 )
+
+// VersionHeader is stamped on every response local sends back over the
+// tunnel. It survives remote's httputil.ReverseProxy untouched (same as
+// Authorization passthrough), so it reaches the browser alongside remote's
+// own X-Opencode-Proxy-Remote-Version.
+const VersionHeader = "X-Opencode-Proxy-Local-Version"
 
 // Options configures a Client.
 type Options struct {
@@ -79,7 +86,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
 		b.Reset()
 
-		srv := &http.Server{Handler: c.proxy}
+		srv := &http.Server{Handler: withVersionHeader(c.proxy)}
 		serveErr := make(chan error, 1)
 		go func() { serveErr <- srv.Serve(sess) }()
 
@@ -99,6 +106,16 @@ func (c *Client) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// withVersionHeader sets VersionHeader before the wrapped handler runs, so
+// it's present even on error responses (e.g. opencode unreachable) — see
+// remote.withVersionHeader for why pre-setting is safe with ReverseProxy.
+func withVersionHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(VersionHeader, version.Version)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

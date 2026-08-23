@@ -198,6 +198,12 @@ func TestRoundTripAndAuthorizationPassthrough(t *testing.T) {
 	if got := gotAuth.Load().(string); got != "Basic b3BlbmNvZGU6c2VjcmV0" {
 		t.Fatalf("Authorization header not preserved: got %q", got)
 	}
+	if got := resp.Header.Get(local.VersionHeader); got == "" {
+		t.Errorf("%s missing on proxied response", local.VersionHeader)
+	}
+	if got := resp.Header.Get(remote.VersionHeader); got == "" {
+		t.Errorf("%s missing on proxied response", remote.VersionHeader)
+	}
 }
 
 func TestSSEIsStreamedIncrementally(t *testing.T) {
@@ -289,6 +295,14 @@ func TestNoTunnelReturns503(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	// No tunnel means no response ever came from local, so only remote's
+	// own header should be present.
+	if got := resp.Header.Get(remote.VersionHeader); got == "" {
+		t.Errorf("%s missing on 503 response", remote.VersionHeader)
+	}
+	if got := resp.Header.Get(local.VersionHeader); got != "" {
+		t.Errorf("%s unexpectedly present with no tunnel connected: %q", local.VersionHeader, got)
 	}
 }
 
