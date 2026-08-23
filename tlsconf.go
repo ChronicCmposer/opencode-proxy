@@ -35,16 +35,26 @@ func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// ServerConfig verifies chain-to-CA only; per-request role checking is
-// RequireOU's job, not this.
-func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
+// loadPoolAndCert is the CA-pool-plus-keypair loading shared by
+// ServerConfig and ClientConfig; label only affects the load error message.
+func loadPoolAndCert(caPath, certPath, keyPath, label string) (*x509.CertPool, tls.Certificate, error) {
 	pool, err := LoadCAPool(caPath)
 	if err != nil {
-		return nil, err
+		return nil, tls.Certificate{}, err
 	}
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("load server keypair: %w", err)
+		return nil, tls.Certificate{}, fmt.Errorf("load %s keypair: %w", label, err)
+	}
+	return pool, cert, nil
+}
+
+// ServerConfig verifies chain-to-CA only; per-request role checking is
+// RequireOU's job, not this.
+func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
+	pool, cert, err := loadPoolAndCert(caPath, certPath, keyPath, "server")
+	if err != nil {
+		return nil, err
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -55,13 +65,9 @@ func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 }
 
 func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, error) {
-	pool, err := LoadCAPool(caPath)
+	pool, cert, err := loadPoolAndCert(caPath, certPath, keyPath, "client")
 	if err != nil {
 		return nil, err
-	}
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		return nil, fmt.Errorf("load client keypair: %w", err)
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -86,17 +87,6 @@ func acceptTunnel(w http.ResponseWriter, r *http.Request, reg *SessionRegistry, 
 	l.Printf("tunnel disconnected")
 }
 
-// Pre-setting the header (rather than in ReverseProxy's ModifyResponse) is
-// safe and covers every response path uniformly, including 403/503:
-// httputil.ReverseProxy only adds backend headers via copyHeader, it never
-// clears what's already on the ResponseWriter.
-func RemoteWithVersionHeader(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(RemoteVersionHeader, Version)
-		next.ServeHTTP(w, r)
-	})
-}
-
 // NewRemoteHTTPServer wraps handler with the addr/TLS the public listener
 // serves on. Certificates are already embedded in tlsConf, so
 // ListenAndServe passes no cert/key file args.
@@ -125,7 +115,7 @@ func (s *RemoteServer) ListenAndServe(ctx context.Context) error {
 		defer cancel()
 		s.srv.Shutdown(shutdownCtx)
 	}()
-	if err := s.srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+	if err := s.srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

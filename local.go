@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"log"
 	"net/http"
@@ -17,10 +16,8 @@ import (
 const LocalVersionHeader = "X-Opencode-Proxy-Local-Version"
 
 type LocalOptions struct {
-	RemoteURL   string
-	OpencodeURL string
-	TLS         *tls.Config
-	Logger      *log.Logger
+	RemoteURL string
+	Logger    *log.Logger
 }
 
 type LocalClient struct {
@@ -134,15 +131,6 @@ func (c *LocalClient) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-}
-
-// See remoteWithVersionHeader for why pre-setting the header is safe with
-// httputil.ReverseProxy.
-func LocalWithVersionHeader(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(LocalVersionHeader, Version)
-		next.ServeHTTP(w, r)
-	})
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

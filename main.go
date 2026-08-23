@@ -72,14 +72,12 @@ func runLocal(ctx context.Context, caPath, certPath, keyPath, remoteURL, opencod
 		return err
 	}
 	dialers := NewTunnelDialerFactory(tlsConf)
-	servers := NewLocalServerFactory(LocalWithVersionHeader(proxy))
+	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, proxy))
 	yamuxConfigs := NewYamuxConfigFactory()
 	backoff := NewBackoff()
 	client := NewLocalClient(LocalOptions{
-		RemoteURL:   remoteURL,
-		OpencodeURL: opencodeURL,
-		TLS:         tlsConf,
-		Logger:      l,
+		RemoteURL: remoteURL,
+		Logger:    l,
 	}, proxy, dialers, servers, yamuxConfigs, backoff)
 	return client.Run(ctx)
 }
@@ -93,7 +91,7 @@ func runRemote(ctx context.Context, caPath, certPath, keyPath, addr string) erro
 	reg := &SessionRegistry{}
 	proxy := NewRemoteProxy(reg, l)
 	yamuxConfigs := NewYamuxConfigFactory()
-	handler := RemoteWithVersionHeader(NewRemoteHandler(proxy, reg, yamuxConfigs, l))
+	handler := WithVersionHeader(RemoteVersionHeader, NewRemoteHandler(proxy, reg, yamuxConfigs, l))
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)
 	return srv.ListenAndServe(ctx)
