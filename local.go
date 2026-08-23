@@ -27,29 +27,29 @@ type LocalClient struct {
 	opts    LocalOptions
 	log     *log.Logger
 	proxy   *httputil.ReverseProxy
-	dialers *tunnelDialerFactory
-	servers *localServerFactory
+	dialers *TunnelDialerFactory
+	servers *LocalServerFactory
 	backoff *Backoff
 }
 
-// localServerFactory builds a fresh http.Server for each reconnect: Run
+// LocalServerFactory builds a fresh http.Server for each reconnect: Run
 // serves a new tunnel session every time, and http.Server must not be reused
 // across sessions once it has been Serve'd and stopped.
-type localServerFactory struct {
+type LocalServerFactory struct {
 	handler http.Handler
 }
 
-func newLocalServerFactory(handler http.Handler) *localServerFactory {
-	return &localServerFactory{handler: handler}
+func NewLocalServerFactory(handler http.Handler) *LocalServerFactory {
+	return &LocalServerFactory{handler: handler}
 }
 
-func (f *localServerFactory) createServer() *http.Server {
+func (f *LocalServerFactory) CreateServer() *http.Server {
 	return &http.Server{Handler: f.handler}
 }
 
 // NewLocalClient takes dialers rather than constructing it itself: dialers is
 // a factory, and factories are only ever constructed in main.
-func NewLocalClient(opts LocalOptions, dialers *tunnelDialerFactory) (*LocalClient, error) {
+func NewLocalClient(opts LocalOptions, dialers *TunnelDialerFactory) (*LocalClient, error) {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
@@ -82,15 +82,15 @@ func NewLocalClient(opts LocalOptions, dialers *tunnelDialerFactory) (*LocalClie
 	}, nil
 }
 
-// Handler returns the request handler main wraps in a localServerFactory;
+// Handler returns the request handler main wraps in a LocalServerFactory;
 // main is where that factory is constructed.
 func (c *LocalClient) Handler() http.Handler {
 	return localWithVersionHeader(c.proxy)
 }
 
-// SetServerFactory wires in the localServerFactory main constructed. Run
+// SetServerFactory wires in the LocalServerFactory main constructed. Run
 // cannot proceed until this has been called.
-func (c *LocalClient) SetServerFactory(f *localServerFactory) {
+func (c *LocalClient) SetServerFactory(f *LocalServerFactory) {
 	c.servers = f
 }
 
@@ -111,7 +111,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
 		b.Reset()
 
-		srv := c.servers.createServer()
+		srv := c.servers.CreateServer()
 		serveErr := make(chan error, 1)
 		go func() { serveErr <- srv.Serve(sess) }()
 

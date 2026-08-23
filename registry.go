@@ -6,12 +6,12 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-type sessionRegistry struct {
+type SessionRegistry struct {
 	mu   sync.Mutex
 	sess *yamux.Session
 }
 
-func (r *sessionRegistry) set(sess *yamux.Session) {
+func (r *SessionRegistry) Set(sess *yamux.Session) {
 	r.mu.Lock()
 	old := r.sess
 	r.sess = sess
@@ -21,7 +21,7 @@ func (r *sessionRegistry) set(sess *yamux.Session) {
 	}
 }
 
-func (r *sessionRegistry) get() *yamux.Session {
+func (r *SessionRegistry) Get() *yamux.Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sess == nil || r.sess.IsClosed() {
@@ -30,9 +30,9 @@ func (r *sessionRegistry) get() *yamux.Session {
 	return r.sess
 }
 
-func (r *sessionRegistry) clear(sess *yamux.Session) {
+func (r *SessionRegistry) Clear(sess *yamux.Session) {
 	r.mu.Lock()
-	if r.sess == sess { // don't clobber a newer session set() already installed
+	if r.sess == sess { // don't clobber a newer session Set() already installed
 		r.sess = nil
 	}
 	r.mu.Unlock()

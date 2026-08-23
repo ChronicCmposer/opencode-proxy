@@ -25,7 +25,7 @@ type RemoteOptions struct {
 
 type RemoteServer struct {
 	opts RemoteOptions
-	reg  sessionRegistry
+	reg  SessionRegistry
 	log  *log.Logger
 
 	proxy *httputil.ReverseProxy
@@ -48,7 +48,7 @@ func NewRemoteServer(opts RemoteOptions) *RemoteServer {
 		},
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				sess := s.reg.get()
+				sess := s.reg.Get()
 				if sess == nil {
 					return nil, fmt.Errorf("no tunnel connected")
 				}
@@ -124,8 +124,8 @@ func (s *RemoteServer) acceptTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Printf("tunnel connected from %s", PeerName(r.TLS))
-	s.reg.set(sess)
+	s.reg.Set(sess)
 	<-sess.CloseChan()
-	s.reg.clear(sess)
+	s.reg.Clear(sess)
 	s.log.Printf("tunnel disconnected")
 }

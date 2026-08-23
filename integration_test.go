@@ -105,11 +105,11 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		RemoteURL:   "wss://" + remoteAddr + "/_tunnel",
 		OpencodeURL: "http://" + oc.addr,
 		TLS:         localTLS,
-	}, newTunnelDialerFactory(localTLS))
+	}, NewTunnelDialerFactory(localTLS))
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetServerFactory(newLocalServerFactory(client.Handler()))
+	client.SetServerFactory(NewLocalServerFactory(client.Handler()))
 	lctx, lcancel := context.WithCancel(context.Background())
 	t.Cleanup(lcancel)
 	go client.Run(lctx)
