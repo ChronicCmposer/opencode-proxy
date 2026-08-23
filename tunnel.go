@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -63,12 +64,7 @@ func DialTunnel(ctx context.Context, remoteURL string, dialers *TunnelDialerFact
 		return nil, fmt.Errorf("dial tunnel: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	sess, err := yamux.Client(conn, yamuxConfigs.CreateConfig())
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("start yamux client: %w", err)
-	}
-	return sess, nil
+	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), true, "client")
 }
 
 // AcceptTunnel assumes the caller has already verified the peer's client
@@ -79,10 +75,23 @@ func AcceptTunnel(w http.ResponseWriter, r *http.Request, yamuxConfigs *YamuxCon
 		return nil, fmt.Errorf("accept tunnel upgrade: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	sess, err := yamux.Server(conn, yamuxConfigs.CreateConfig())
+	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), false, "server")
+}
+
+// newYamuxSession wraps conn (already an established websocket connection)
+// as a yamux session, closing conn on failure. asClient selects yamux.Client
+// vs yamux.Server; role only affects the wrapped error message.
+func newYamuxSession(conn net.Conn, cfg *yamux.Config, asClient bool, role string) (*yamux.Session, error) {
+	var sess *yamux.Session
+	var err error
+	if asClient {
+		sess, err = yamux.Client(conn, cfg)
+	} else {
+		sess, err = yamux.Server(conn, cfg)
+	}
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("start yamux server: %w", err)
+		return nil, fmt.Errorf("start yamux %s: %w", role, err)
 	}
 	return sess, nil
 }
