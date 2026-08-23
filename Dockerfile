@@ -4,8 +4,8 @@
 # not the Docker CLI — see Makefile and README.md. The frontend is still
 # dockerfile.v0, which BuildKit speaks natively regardless of daemon.
 #
-# Only the --remote half ships as a container: it's what runs on the EC2
-# host. --local stays a native binary on the Mac (see launchd/).
+# This same image runs both halves: --remote on the EC2 host, and --local
+# inside a Debian VM (see vm/deploy-local.sh) — both under containerd/ctr.
 
 FROM --platform=$BUILDPLATFORM golang:1.24 AS build
 WORKDIR /src

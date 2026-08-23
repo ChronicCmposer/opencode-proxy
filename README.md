@@ -24,26 +24,17 @@ host never sees or stores it.
 
 ## 1. Build
 
-Two separate artifacts come out of this repo:
-
-- **The Mac side** (`--local`) is a plain Go binary — no container involved,
-  since it runs directly on your MacBook under launchd.
-- **The AWS side** (`--remote`) ships as an OCI container image, since the
-  EC2 host runs it under containerd rather than as a bare process.
+Both sides — `--local` and `--remote` — ship as the **same** `linux/arm64`
+OCI container image, run under containerd via `ctr`. `--local` runs inside a
+Debian VM (e.g. Parallels on the Mac); `--remote` runs on the EC2 host. No
+native macOS binary is involved anywhere in this path.
 
 ```sh
-make build   # native opencode-proxy binary, for local dev/testing
+make build   # native opencode-proxy binary, for local dev/testing only
 make test    # unit + loopback integration tests
 ```
 
-Cross-compile the Mac binary directly with `go build` (no container needed
-for this side):
-
-```sh
-GOOS=darwin GOARCH=arm64 go build -o opencode-proxy-darwin-arm64 ./cmd/opencode-proxy
-```
-
-### Building the remote container image
+### Building the container image
 
 Image builds go through **BuildKit's `buildctl`, talking to a standalone
 `buildkitd` running the containerd worker** — no Docker CLI or daemon
@@ -135,12 +126,8 @@ to whatever CloudFormation replaces it with next `deploy.sh` run.
 
 ## 4. Run `opencode web` and the local proxy
 
-Two ways to run the local (`--local`) side; pick one.
-
-### Option A — inside a Debian VM (e.g. Parallels on the Mac)
-
-If `opencode web` already runs inside a Debian testing arm64 VM (Parallels,
-bridged networking, containerd already installed), deploy the **same**
+`opencode web` runs inside a Debian testing arm64 VM (Parallels, bridged
+networking, containerd already installed). Deploy the **same**
 `opencode-proxy.tar` image built in step 1 as a container there — no
 separate local build, no Docker, just `ctr` like the EC2 side:
 
@@ -160,23 +147,6 @@ means it survives VM reboots and reconnects after the Mac sleeps.
 
 This script assumes the VM and `opencode web` are already up — it doesn't
 create the VM or install opencode.
-
-### Option B — native binary on macOS (no VM)
-
-```sh
-OPENCODE_SERVER_PASSWORD=<your-password> opencode web --port 4096
-```
-
-```sh
-sudo mkdir -p /usr/local/etc/opencode-proxy
-sudo cp pki/out/ca.crt pki/out/tunnel.{crt,key} /usr/local/etc/opencode-proxy/
-cp opencode-proxy-darwin-arm64 /usr/local/bin/opencode-proxy
-cp launchd/ai.opencode.proxy.plist ~/Library/LaunchAgents/
-# edit ~/Library/LaunchAgents/ai.opencode.proxy.plist: set --remote-url to your real domain
-launchctl load ~/Library/LaunchAgents/ai.opencode.proxy.plist
-```
-
-Check `/tmp/opencode-proxy.log` if the tunnel doesn't come up.
 
 ## 5. Connect from your phone
 
@@ -202,9 +172,10 @@ Check `/tmp/opencode-proxy.log` if the tunnel doesn't come up.
   token-by-token rather than appearing all at once — that's the SSE path
   actually streaming end to end.
 - Failure drills worth trying once: put the Mac to sleep and wake it (the
-  tunnel should reconnect within ~30s); kill `opencode-proxy --local`
-  (launchd should restart it); reboot the EC2 instance (systemd should bring
-  `--remote` back up and the Mac should reconnect on its own).
+  tunnel should reconnect within ~30s); `systemctl stop opencode-proxy-local`
+  on the VM (`Restart=always` should bring it back); reboot the EC2 instance
+  (systemd should bring `--remote` back up and the VM should reconnect on
+  its own).
 
 ## Renewing certificates
 
@@ -213,8 +184,10 @@ Check `/tmp/opencode-proxy.log` if the tunnel doesn't come up.
 ```
 
 Re-run the matching `issue-*.sh` script, then redeploy that cert to wherever
-it lives (SSM + instance restart for the server cert; scp + launchd restart
-for the tunnel cert; reinstall the `.mobileconfig` for a device cert).
+it lives (SSM + instance restart for the server cert; re-run
+`vm/deploy-local.sh`, or copy the renewed cert into `/etc/opencode-proxy` on
+the VM and `systemctl restart opencode-proxy-local`, for the tunnel cert;
+reinstall the `.mobileconfig` for a device cert).
 
 ## Out of scope
 
