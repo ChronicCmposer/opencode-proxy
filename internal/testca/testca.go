@@ -15,14 +15,12 @@ import (
 	"time"
 )
 
-// CA is a throwaway certificate authority for tests.
 type CA struct {
 	Cert    *x509.Certificate
 	CertPEM []byte
 	key     *ecdsa.PrivateKey
 }
 
-// New creates a fresh self-signed CA.
 func New() (*CA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -48,7 +46,6 @@ func New() (*CA, error) {
 	return &CA{Cert: cert, CertPEM: pemEncode("CERTIFICATE", der), key: key}, nil
 }
 
-// LeafOptions configures an issued leaf certificate.
 type LeafOptions struct {
 	CommonName string
 	OU         string
@@ -56,14 +53,11 @@ type LeafOptions struct {
 	IsServer   bool // sets serverAuth EKU in addition to clientAuth
 }
 
-// Leaf is an issued end-entity certificate as PEM bytes, ready for
-// tls.X509KeyPair or writing to disk.
 type Leaf struct {
 	CertPEM []byte
 	KeyPEM  []byte
 }
 
-// Issue signs a new leaf certificate under the CA.
 func (ca *CA) Issue(opts LeafOptions) (*Leaf, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -104,7 +98,6 @@ func (ca *CA) Issue(opts LeafOptions) (*Leaf, error) {
 	}, nil
 }
 
-// TLSCert returns the leaf as a tls.Certificate.
 func (l *Leaf) TLSCert() (tls.Certificate, error) {
 	return tls.X509KeyPair(l.CertPEM, l.KeyPEM)
 }

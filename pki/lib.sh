@@ -8,7 +8,7 @@ OUT_DIR="${PKI_OUT_DIR:-$PKI_DIR/out}"
 CA_KEY="$OUT_DIR/ca.key"
 CA_CERT="$OUT_DIR/ca.crt"
 
-# Organizational Units the Go code checks against (tlsconf.OUTunnel / OUDevice).
+# Must match internal/tlsconf.OUTunnel / OUDevice — nothing enforces this.
 OU_TUNNEL="opencode-proxy-tunnel"
 OU_DEVICE="opencode-proxy-device"
 

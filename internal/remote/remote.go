@@ -19,23 +19,14 @@ import (
 	"github.com/ChronicCmposer/opencode-proxy/internal/version"
 )
 
-// VersionHeader is stamped on every response this side sends — proxied,
-// forbidden, or 503 alike — so a single response can show which build of
-// --remote is currently running. Local's response carries its own
-// X-Opencode-Proxy-Local-Version, which survives untouched through this
-// proxy the same way Authorization passthrough does, so a normal browser
-// response ends up carrying both.
 const VersionHeader = "X-Opencode-Proxy-Remote-Version"
 
-// Options configures a Server.
 type Options struct {
-	Addr   string // e.g. ":443"
+	Addr   string
 	TLS    *tls.Config
 	Logger *log.Logger
 }
 
-// Server is the remote proxy: it serves the public listener and holds the
-// currently connected tunnel session, if any.
 type Server struct {
 	opts Options
 	reg  sessionRegistry
@@ -52,9 +43,9 @@ func New(opts Options) *Server {
 	s := &Server{opts: opts, log: l}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			// The destination host is irrelevant: DialContext always opens a
-			// yamux stream instead of a real network connection. A stable
-			// placeholder keeps ReverseProxy's URL rewriting happy.
+			// opencode.tunnel is never resolved: DialContext below ignores
+			// the address and opens a yamux stream instead. ReverseProxy
+			// still needs *some* URL to rewrite the request against.
 			pr.SetURL(&url.URL{Scheme: "http", Host: "opencode.tunnel"})
 			pr.Out.Host = pr.In.Host
 		},
@@ -66,12 +57,10 @@ func New(opts Options) *Server {
 				}
 				return sess.Open()
 			},
-			// Never buffer or time out a streaming response (opencode's
-			// GET /event SSE stream in particular).
 			ResponseHeaderTimeout: 0,
 			IdleConnTimeout:       0,
 		},
-		FlushInterval: -1, // flush every write immediately, required for SSE
+		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			s.log.Printf("proxy error for %s: %v", r.URL.Path, err)
 			http.Error(w, "no tunnel connected", http.StatusServiceUnavailable)
@@ -80,7 +69,6 @@ func New(opts Options) *Server {
 	return s
 }
 
-// ListenAndServe runs the public mTLS listener until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:      s.opts.Addr,
@@ -100,11 +88,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	return nil
 }
 
-// withVersionHeader sets VersionHeader before the wrapped handler runs.
-// Setting it up front (rather than in ReverseProxy's ModifyResponse) covers
-// every response path uniformly — proxied, 403, and 503 — and is safe to
-// pre-set: httputil.ReverseProxy only adds backend headers via copyHeader,
-// it never clears what's already on the ResponseWriter.
+// Pre-setting the header (rather than in ReverseProxy's ModifyResponse) is
+// safe and covers every response path uniformly, including 403/503:
+// httputil.ReverseProxy only adds backend headers via copyHeader, it never
+// clears what's already on the ResponseWriter.
 func withVersionHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(VersionHeader, version.Version)
@@ -141,10 +128,6 @@ func (s *Server) acceptTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Printf("tunnel connected from %s", tlsconf.PeerName(r.TLS))
 	s.reg.set(sess)
-
-	// Block until the session dies (Mac disconnects, network drop, etc.), then
-	// deregister it so new requests get a clean 503 instead of hanging on a
-	// dead session.
 	<-sess.CloseChan()
 	s.reg.clear(sess)
 	s.log.Printf("tunnel disconnected")

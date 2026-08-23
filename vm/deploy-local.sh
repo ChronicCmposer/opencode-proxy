@@ -1,30 +1,14 @@
 #!/usr/bin/env bash
-# Deploys the --local proxy as a container inside an already-running Debian
-# VM (e.g. a Parallels VM on the Mac), using the same opencode-proxy.tar
-# image and the same containerd/ctr mechanics as the EC2 --remote side —
-# see cloudformation/stack.yaml's UserData for the pattern this mirrors.
+# Assumes the VM and opencode (on 127.0.0.1:4096) are already up — this
+# does not provision the VM or install opencode, and must be run from a
+# checkout of this repo (reaches into ../scripts and ../systemd).
 #
-# Assumes: the VM is up, opencode itself is already running on
-# 127.0.0.1:4096 inside it, and you have root (sudo) on the VM. This script
-# only installs containerd if it's missing, imports the image, and sets up
-# the opencode-proxy-local systemd unit (plus the opencode-proxy-update
-# timer, which re-checks for a new image every 6h — see
-# scripts/update-image.sh) — it does not provision the VM or install
-# opencode.
-#
-# Usage (run as root on the VM, or via sudo):
+# Usage (as root):
 #   vm/deploy-local.sh <path-to-opencode-proxy.tar> <cert-dir> <remote-wss-url> [opencode-url] [image-tar-url]
 #
-# <cert-dir> must contain ca.crt, tunnel.crt, tunnel.key (from
-# pki/issue-tunnel.sh) — copy them in via scp or a Parallels shared folder
-# before running this. <path-to-opencode-proxy.tar> is used for this
-# initial import (so first deploy works offline / from a shared folder);
-# [image-tar-url] is what the 6-hourly updater re-checks afterward and
-# defaults to this repo's GitHub Releases URL.
-#
-# This script expects to be run from a checkout of this repo (it reaches
-# into ../scripts and ../systemd for the updater), e.g.:
-#   sudo vm/deploy-local.sh ./opencode-proxy.tar ./pki/out wss://code.example.com/_tunnel
+# <path-to-opencode-proxy.tar> is a local file for this initial import
+# (works offline / from a shared folder); [image-tar-url] is the separate
+# URL the 6-hourly updater polls afterward.
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -104,9 +88,6 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now opencode-proxy-local
 
-# Periodic self-update: checks a small checksum file every 6h and only
-# pulls the full image when it actually changed. Same script and unit pair
-# as the EC2 --remote side.
 install -m 755 "$repo_dir/scripts/update-image.sh" /usr/local/bin/opencode-proxy-update.sh
 
 cat > /etc/opencode-proxy/update.env <<ENV

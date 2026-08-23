@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Issues the remote proxy's server certificate: what the browser and the Mac
-# both verify as ServerName when connecting to the public listener.
-#
 # Usage: issue-server.sh <domain> [more.domain ...]
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

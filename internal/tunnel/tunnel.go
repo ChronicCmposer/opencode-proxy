@@ -1,7 +1,7 @@
-// Package tunnel establishes the single multiplexed connection the local
-// proxy dials outbound to the remote proxy, and turns it into a yamux
-// session usable as a net.Listener (local side) or a stream dialer (remote
-// side).
+// Package tunnel wraps the outbound WSS connection as a yamux session:
+// yamux.Session satisfies both net.Listener and a stream dialer, which is
+// what lets local (internal/local) and remote (internal/remote) reuse it as
+// the transport for a normal http.Server / http.Transport respectively.
 package tunnel
 
 import (
@@ -15,13 +15,10 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-// Path is the fixed HTTP path the remote proxy reserves for tunnel upgrades.
-// Every other path is treated as a request to forward to opencode.
 const Path = "/_tunnel"
 
-// Config is the shared yamux tuning. Read/write deadlines are left disabled
-// and StreamOpenTimeout is generous because a browser's GET /event SSE
-// stream is expected to sit idle-but-open for a long time.
+// StreamOpenTimeout is generous because a browser's GET /event SSE stream
+// is expected to sit idle-but-open for a long time.
 func Config() *yamux.Config {
 	c := yamux.DefaultConfig()
 	c.EnableKeepAlive = true
@@ -30,9 +27,7 @@ func Config() *yamux.Config {
 	return c
 }
 
-// Dial opens one WSS connection to remoteURL (e.g. "wss://code.example.com/_tunnel")
-// authenticated with tlsConf, and wraps it as a yamux client session. The
-// caller owns the returned session's lifetime and must Close it.
+// Dial's caller owns the returned session's lifetime and must Close it.
 func Dial(ctx context.Context, remoteURL string, tlsConf *tls.Config) (*yamux.Session, error) {
 	httpClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsConf},
@@ -52,9 +47,8 @@ func Dial(ctx context.Context, remoteURL string, tlsConf *tls.Config) (*yamux.Se
 	return sess, nil
 }
 
-// Accept upgrades an incoming HTTP request at Path to a WebSocket and wraps
-// it as a yamux server session. The caller must have already verified the
-// peer's client certificate carries the tunnel role before calling this.
+// Accept assumes the caller has already verified the peer's client
+// certificate carries the tunnel role — it does no such check itself.
 func Accept(w http.ResponseWriter, r *http.Request) (*yamux.Session, error) {
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {

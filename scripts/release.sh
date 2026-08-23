@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# Builds and publishes a GitHub Release for the exact commit HEAD is on.
-# Run via `make release`, after `make bump-version LEVEL=...` has tagged
-# and pushed the commit you want to release.
-#
-# Refuses to run unless: the tree is clean, local HEAD matches the remote
-# branch HEAD, HEAD is exactly tagged, and that tag exists on origin. This
-# is deliberately strict — a release should always be reproducible from a
-# tag someone else can check out and get the identical build.
+# Refuses to run unless HEAD is exactly, cleanly, pushed-tagged — a release
+# should always be reproducible from a tag someone else can check out.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

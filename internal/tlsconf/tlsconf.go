@@ -1,12 +1,9 @@
-// Package tlsconf builds the mutual-TLS configurations used by both halves of
-// the proxy, and enforces the certificate identity split between tunnel
-// endpoints and browser devices.
-//
-// Every participant — the remote proxy, the local proxy, and each browser
-// device — holds a leaf certificate signed by a single private CA. mTLS alone
-// proves a peer belongs to that CA, but not which role it holds. The role is
-// carried in the leaf's Organizational Unit, so that a stolen device
-// certificate cannot be used to impersonate the tunnel endpoint.
+// Package tlsconf builds the mutual-TLS configurations used by both halves
+// of the proxy, and enforces the certificate identity split between tunnel
+// endpoints and browser devices. mTLS alone proves a peer belongs to the
+// private CA, not which role it holds; the role is carried in the leaf's
+// Organizational Unit, so a stolen device certificate can't impersonate the
+// tunnel endpoint.
 package tlsconf
 
 import (
@@ -18,18 +15,15 @@ import (
 	"slices"
 )
 
-// Organizational Unit values that distinguish the two client roles. Issued by
-// the pki/ scripts: issue-tunnel.sh sets OUTunnel, issue-client.sh sets ODevice.
+// Must match the OU values pki/issue-tunnel.sh and pki/issue-client.sh
+// actually issue — nothing enforces this at compile time.
 const (
 	OUTunnel = "opencode-proxy-tunnel"
 	OUDevice = "opencode-proxy-device"
 )
 
-// ErrWrongRole is returned when a peer presents a valid certificate for a role
-// other than the one the endpoint requires.
 var ErrWrongRole = errors.New("client certificate is not valid for this endpoint")
 
-// LoadCAPool reads a PEM bundle of CA certificates into a pool.
 func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	pem, err := os.ReadFile(caPath)
 	if err != nil {
@@ -42,9 +36,8 @@ func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// ServerConfig builds the config for the remote proxy's public listener. Every
-// connection must present a certificate chaining to the private CA; the
-// per-role check happens later, per-request, via RequireOU.
+// ServerConfig verifies chain-to-CA only; per-request role checking is
+// RequireOU's job, not this.
 func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 	pool, err := LoadCAPool(caPath)
 	if err != nil {
@@ -62,9 +55,6 @@ func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 	}, nil
 }
 
-// ClientConfig builds the config the local proxy uses to dial the remote. The
-// server's certificate is signed by the private CA rather than a public one,
-// so the CA pool is supplied explicitly as RootCAs.
 func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, error) {
 	pool, err := LoadCAPool(caPath)
 	if err != nil {
@@ -82,8 +72,6 @@ func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, er
 	}, nil
 }
 
-// PeerOUs returns the Organizational Units on the verified peer certificate of
-// a completed handshake.
 func PeerOUs(state *tls.ConnectionState) []string {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return nil
@@ -91,7 +79,6 @@ func PeerOUs(state *tls.ConnectionState) []string {
 	return state.PeerCertificates[0].Subject.OrganizationalUnit
 }
 
-// PeerName returns the Common Name of the verified peer certificate, for logs.
 func PeerName(state *tls.ConnectionState) string {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return "<none>"
@@ -99,9 +86,8 @@ func PeerName(state *tls.ConnectionState) string {
 	return state.PeerCertificates[0].Subject.CommonName
 }
 
-// RequireOU reports whether the peer holds the given role. The TLS stack has
-// already verified the chain by the time this runs, so this is purely the
-// role check.
+// RequireOU assumes chain verification already happened (via ServerConfig's
+// ClientAuth) — it only checks role.
 func RequireOU(state *tls.ConnectionState, ou string) error {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return ErrWrongRole

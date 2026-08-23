@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
-# Leaf certificates are issued with a 90-day lifetime. Re-run the relevant
-# issue-*.sh script before expiry to renew:
-#
-#   pki/issue-server.sh code.example.com   # then redeploy to the remote host
-#   pki/issue-tunnel.sh                    # then redeploy to the Mac
-#   pki/issue-client.sh phone              # then reinstall the .mobileconfig
-#
-# Check current expiry with:
-#   openssl x509 -in pki/out/<name>.crt -noout -enddate
-#
-# This script just reports what's expiring soon; it does not renew
-# automatically (renewal touches devices you may not have to hand).
+# Only reports what's expiring soon — despite the name, it does not renew
+# anything itself (renewal touches devices you may not have to hand).
+# Re-run the matching issue-*.sh script to actually renew.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

@@ -1,6 +1,5 @@
-# Root CA profile for the opencode-proxy private CA. Used only by
-# init-ca.sh; leaf certificates build their own extension file inline (see
-# lib.sh) so their SANs and Organizational Units can vary per invocation.
+# Used only by init-ca.sh — leaf certs build their extension file inline
+# in lib.sh instead, since their SANs/OUs vary per invocation.
 
 [req]
 distinguished_name = dn

@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Issues a device (browser) client certificate, plus two bundles for
-# installing it on a phone in one step:
-#   <name>.p12           PKCS#12 identity, for manual import
-#   <name>.mobileconfig   Apple configuration profile bundling CA trust +
-#                          the device identity, so installing it once is
-#                          enough for Safari to stop prompting for the cert.
-#
 # Usage: issue-client.sh <device-name>   (e.g. "phone", "ipad")
+#
+# Also emits <name>.p12 (for manual import) and <name>.mobileconfig (an
+# Apple profile bundling CA trust + device identity in one install, so
+# Safari stops prompting for the cert).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

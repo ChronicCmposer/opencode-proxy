@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Cuts a new semver tag from the most recent one and pushes it. Run via
-# `make bump-version LEVEL=patch|minor|major`.
-#
 # The very first tag must be created manually — there's nothing to bump
-# from yet:
-#   git tag v0.1.0 && git push origin v0.1.0
+# from yet: git tag v0.1.0 && git push origin v0.1.0
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -31,11 +27,10 @@ if [[ "$local_head" != "$remote_head" ]]; then
   exit 1
 fi
 
-# Highest vMAJOR.MINOR.PATCH tag in the whole repo, by version order — not
-# "nearest tag reachable from HEAD" (git describe --abbrev=0), which picks
-# unpredictably when multiple tags point at the same commit (as they will
-# here: bumping doesn't create a new commit, so a second bump in a row
-# would otherwise silently compute from the wrong base).
+# Not `git describe --abbrev=0`: when multiple tags point at the same
+# commit (as happens here, since bumping doesn't create a new commit),
+# it picks unpredictably rather than the highest version — confirmed by
+# testing repeated bumps against a disposable git remote.
 latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
 if [[ -z "$latest_tag" ]]; then
   echo "error: no tag found to bump from — create the first one manually:" >&2

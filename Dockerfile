@@ -1,11 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# Built with `buildctl` against a standalone buildkitd (containerd worker),
-# not the Docker CLI — see Makefile and README.md. The frontend is still
-# dockerfile.v0, which BuildKit speaks natively regardless of daemon.
-#
-# This same image runs both halves: --remote on the EC2 host, and --local
-# inside a Debian VM (see vm/deploy-local.sh) — both under containerd/ctr.
+# Built with `buildctl` against a standalone buildkitd, not the Docker CLI
+# — see Makefile. This same image runs both --remote (EC2) and --local
+# (vm/deploy-local.sh), both under containerd/ctr.
 
 FROM --platform=$BUILDPLATFORM golang:1.24 AS build
 WORKDIR /src
@@ -14,16 +11,13 @@ ARG TARGETARCH=arm64
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
-# internal/version/version.go is generated on the host by `make
-# generate-version` (a prerequisite of `make image`) and picked up here
-# along with the rest of internal/ — regenerating it inside the container
-# would need .git history in the build context just for a version string.
+# internal/version/version.go is generated on the host (make image depends
+# on generate-version) and picked up here along with the rest of internal/
+# — regenerating it in-container would need .git history in the build context.
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/opencode-proxy ./cmd/opencode-proxy
 
-# Static binary, no libc, nothing else — the image never needs a shell or
-# package manager since the proxy has no runtime dependencies of its own.
 FROM scratch
 COPY --from=build /out/opencode-proxy /opencode-proxy
 ENTRYPOINT ["/opencode-proxy"]

@@ -6,10 +6,6 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-// sessionRegistry holds at most one active tunnel session. A new tunnel
-// connection (e.g. after the Mac sleeps and wakes) replaces and closes
-// whatever was there before, so the remote never has to reconcile two
-// concurrent tunnels to the same home.
 type sessionRegistry struct {
 	mu   sync.Mutex
 	sess *yamux.Session
@@ -36,7 +32,7 @@ func (r *sessionRegistry) get() *yamux.Session {
 
 func (r *sessionRegistry) clear(sess *yamux.Session) {
 	r.mu.Lock()
-	if r.sess == sess {
+	if r.sess == sess { // don't clobber a newer session set() already installed
 		r.sess = nil
 	}
 	r.mu.Unlock()

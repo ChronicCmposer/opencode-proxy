@@ -1,7 +1,5 @@
-// Package internal_test is a loopback integration test exercising the full
-// path: browser -> remote proxy -> yamux tunnel -> local proxy -> opencode.
-// Everything runs on 127.0.0.1 with an in-memory CA from testca, standing in
-// for the real cross-network deployment.
+// Loopback integration test: browser -> remote proxy -> yamux tunnel ->
+// local proxy -> opencode, all on 127.0.0.1 with an in-memory CA.
 package internal_test
 
 import (
@@ -25,8 +23,6 @@ import (
 	"github.com/ChronicCmposer/opencode-proxy/internal/tlsconf"
 )
 
-// harness wires up a fake opencode server, a --local client, and a --remote
-// server, all on loopback, sharing one CA.
 type harness struct {
 	t          *testing.T
 	ca         *testca.CA
@@ -49,11 +45,8 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 
-	// The fake opencode server: plain HTTP on loopback, exactly like the real
-	// `opencode web` default.
 	oc := startHTTPServer(t, opencodeHandler)
 
-	// Server cert for the remote listener's own TLS identity.
 	serverLeaf, err := ca.Issue(testca.LeafOptions{
 		CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true,
 	})
@@ -65,7 +58,6 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 
-	// Tunnel client identity (stands in for the Mac).
 	tunnelLeaf, err := ca.Issue(testca.LeafOptions{CommonName: "home-mac", OU: tlsconf.OUTunnel})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +67,6 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 
-	// Device identity (stands in for the phone).
 	deviceLeaf, err := ca.Issue(testca.LeafOptions{CommonName: "phone", OU: tlsconf.OUDevice})
 	if err != nil {
 		t.Fatal(err)
@@ -153,8 +144,6 @@ func (h *harness) url(path string) string {
 	return "https://" + h.remoteAddr + path
 }
 
-// waitForTunnel polls the remote proxy until it forwards successfully,
-// meaning the local side has finished dialing and registering its session.
 func waitForTunnel(t *testing.T, cl *http.Client, url string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -257,7 +246,6 @@ func TestSSEIsStreamedIncrementally(t *testing.T) {
 }
 
 func TestNoTunnelReturns503(t *testing.T) {
-	// A remote with no local client dialed in at all.
 	dir := t.TempDir()
 	ca, err := testca.New()
 	if err != nil {
@@ -296,8 +284,6 @@ func TestNoTunnelReturns503(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
-	// No tunnel means no response ever came from local, so only remote's
-	// own header should be present.
 	if got := resp.Header.Get(remote.VersionHeader); got == "" {
 		t.Errorf("%s missing on 503 response", remote.VersionHeader)
 	}
@@ -309,7 +295,7 @@ func TestNoTunnelReturns503(t *testing.T) {
 func TestNoClientCertRejected(t *testing.T) {
 	h := newHarness(t, http.NewServeMux())
 	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
-		InsecureSkipVerify: true, // client trusts nothing; server should refuse anyway
+		InsecureSkipVerify: true,
 	}}}
 	_, err := cl.Get(h.url("/anything"))
 	if err == nil {
@@ -341,8 +327,6 @@ func TestCertFromDifferentCARejected(t *testing.T) {
 		t.Fatal("expected TLS handshake failure for a cert from an untrusted CA")
 	}
 }
-
-// --- helpers ---
 
 type httpServer struct{ addr string }
 

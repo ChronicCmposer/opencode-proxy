@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Creates the private CA that signs every certificate the proxy uses: the
-# remote's server cert, the tunnel client cert, and each device's client
-# cert. Run this once; keep pki/out/ca.key offline as much as practical
-# (it is the root of trust for everything reachable through the tunnel).
+# Run once. Keep pki/out/ca.key offline as much as practical — it's the
+# root of trust for everything reachable through the tunnel.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

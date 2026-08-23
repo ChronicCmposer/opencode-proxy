@@ -153,9 +153,6 @@ Resources:
           chmod 600 /etc/opencode-proxy/server.key
           chmod 644 /etc/opencode-proxy/ca.crt /etc/opencode-proxy/server.crt
 
-          # Fetch the OCI image produced by `make image` (see README.md) and
-          # load it straight into containerd's local content store — no
-          # registry involved.
           curl -fsSL -o /tmp/opencode-proxy.tar "${ImageTarURL}"
           ctr images import /tmp/opencode-proxy.tar
           sha256sum /tmp/opencode-proxy.tar | awk '{print $1}' > /etc/opencode-proxy/current.sha256
@@ -192,11 +189,6 @@ Resources:
           systemctl daemon-reload
           systemctl enable --now opencode-proxy
 
-          # Periodic self-update: checks a small checksum file every 6h and
-          # only pulls the full image when it actually changed. See
-          # scripts/update-image.sh for the checksum-compare / import /
-          # restart / auto-rollback logic — this is the same script and
-          # unit pair used on the local --local VM.
           curl -fsSL -o /usr/local/bin/opencode-proxy-update.sh "${UpdateScriptURL}"
           chmod +x /usr/local/bin/opencode-proxy-update.sh
 

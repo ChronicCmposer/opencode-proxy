@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Checks whether a newer opencode-proxy image has been published and, if
-# so, imports it and restarts the service — with an automatic rollback if
-# the new image doesn't stay up. Shared by both hosts: the EC2 --remote
-# instance and the local --local VM both run this under the same
-# opencode-proxy-update.timer/.service pair (every 6h), pointed at
-# different services via /etc/opencode-proxy/update.env.
-#
-# Every 6h this only downloads a small checksum file, not the image itself
-# — the full opencode-proxy.tar is only pulled when that checksum actually
-# changes.
-#
 # Configuration comes from the environment (see the .service unit's
 # EnvironmentFile=):
 #   IMAGE_TAR_URL   e.g. https://github.com/.../releases/latest/download/opencode-proxy.tar
@@ -25,7 +14,6 @@ STATE_DIR="${STATE_DIR:-/etc/opencode-proxy}"
 
 CURRENT_SHA_FILE="$STATE_DIR/current.sha256"
 ROLLBACK_REF="${IMAGE_REF}-rollback"
-# How long to wait after restarting before deciding the update "took."
 # ctr run's ExecStart runs in the foreground, so `systemctl is-active`
 # genuinely reflects whether the container process is still alive.
 HEALTH_WAIT_SECS=15
@@ -52,9 +40,7 @@ if [[ "$downloaded_sha" != "$new_sha" ]]; then
   exit 1
 fi
 
-# Snapshot the currently-running image under a rollback tag before
-# replacing it. Ignored if there's nothing to snapshot yet (first run).
-ctr images tag "$IMAGE_REF" "$ROLLBACK_REF" >/dev/null 2>&1 || true
+ctr images tag "$IMAGE_REF" "$ROLLBACK_REF" >/dev/null 2>&1 || true # no-op on first-ever update
 
 ctr images import "$work_dir/image.tar"
 systemctl restart "$SERVICE_NAME"

@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Uploads the remote server's cert material into SSM Parameter Store as
-# SecureStrings, at the paths the stack's UserData reads from. Run this
-# after pki/issue-server.sh and before (or after re-running) deploy.sh —
-# the instance re-fetches these only at boot, so update this then reboot
-# (or `systemctl restart opencode-proxy` after re-fetching by hand) to pick
-# up a renewed cert.
+# The instance only fetches these SSM parameters at boot — after
+# re-uploading a renewed cert, reboot it (or `systemctl restart
+# opencode-proxy` after re-fetching by hand) to pick it up.
 #
 # Usage: cloudformation/upload-certs.sh [param-prefix]
 set -euo pipefail

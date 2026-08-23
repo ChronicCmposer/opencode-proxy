@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Deploys/updates the opencode-proxy remote stack. Certificates must already
-# be uploaded to SSM (see upload-certs.sh) before the instance's UserData can
-# fetch them at boot.
+# Certificates must already be uploaded to SSM (see upload-certs.sh) before
+# the instance's UserData can fetch them at boot.
 #
 # Usage:
 #   cloudformation/deploy.sh <stack-name> <domain-name> <key-pair-name> <admin-cidr>
