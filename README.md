@@ -66,9 +66,11 @@ listens elsewhere). The `Dockerfile` cross-compiles the Go binary for
 and copies just that static binary onto `FROM scratch` — the final image has
 no shell, no package manager, nothing but `/opencode-proxy`.
 
-Publish `opencode-proxy.tar` as a GitHub Release asset with exactly that
-name — the CloudFormation stack's `ImageTarURL` parameter defaults to
-`.../releases/latest/download/opencode-proxy.tar`.
+Publish `opencode-proxy.tar` **and** the `opencode-proxy.tar.sha256` it
+writes alongside it as GitHub Release assets, with exactly those names —
+the CloudFormation stack's `ImageTarURL` parameter defaults to
+`.../releases/latest/download/opencode-proxy.tar`, and both hosts' upgrade
+timers expect the matching `.sha256` at the same URL plus that suffix.
 
 ## 2. Issue certificates
 
@@ -97,7 +99,9 @@ tunnel plus occasional phone use; see the `InstanceType` parameter
 description in `cloudformation/stack.yaml` for the sizing rationale and when
 to bump it. UserData installs `containerd`, imports `opencode-proxy.tar`
 (published in step 1) with `ctr images import`, and runs it under a systemd
-unit wrapping `ctr run --net-host` — no Docker on the instance.
+unit wrapping `ctr run --net-host` — no Docker on the instance. It also
+installs the `opencode-proxy-update.timer` that keeps the image current
+going forward — see "Staying up to date" in step 4.
 
 ```sh
 ./pki/issue-server.sh code.example.com                       # before you have an EIP, SANs can be added later — see below
@@ -147,6 +151,34 @@ means it survives VM reboots and reconnects after the Mac sleeps.
 
 This script assumes the VM and `opencode web` are already up — it doesn't
 create the VM or install opencode.
+
+### Staying up to date
+
+Both `deploy.sh` (EC2) and `vm/deploy-local.sh` (VM) also install an
+`opencode-proxy-update.timer` that runs every 6 hours on each host. Each
+check downloads only the small `opencode-proxy.tar.sha256` file and
+compares it to what's currently deployed (`/etc/opencode-proxy/current.sha256`)
+— the full image is only pulled when that checksum actually changed. On a
+change it snapshots the currently-running image under a rollback tag,
+imports the new one, and restarts the service; if the service doesn't stay
+up (`systemctl is-active`, checked 15s after restart), it automatically
+re-tags and restarts back to the previous image. Either way you can see
+what happened:
+
+```sh
+journalctl -u opencode-proxy-update      # what the last check(s) did
+systemctl status opencode-proxy-update   # "failed" here means an update
+                                          # was attempted and rolled back —
+                                          # investigate before publishing
+                                          # a fix, the host is still serving
+                                          # traffic on the previous image
+systemctl list-timers opencode-proxy-update.timer   # when it next runs
+```
+
+To publish an update: `make image`, publish the new `opencode-proxy.tar` +
+`.tar.sha256` to the GitHub release (overwriting `latest`), and wait up to
+6h — or force it immediately with `sudo systemctl start
+opencode-proxy-update` on either host.
 
 ## 5. Connect from your phone
 

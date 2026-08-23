@@ -37,10 +37,11 @@ check-buildkitd:
 	@BUILDKIT_HOST=$(BUILDKIT_HOST) buildctl debug workers >/dev/null || \
 	  (echo "error: buildkitd not reachable at $(BUILDKIT_HOST) — see README.md 'Setting up buildkitd'" >&2; exit 1)
 
-## Builds the linux/arm64 OCI image (the --remote binary on FROM scratch)
-## and writes it out as an OCI archive tar — this is the exact artifact
-## published to GitHub Releases and imported on the EC2 host via
-## `ctr images import`.
+## Builds the linux/arm64 OCI image (the same image runs both --local and
+## --remote) and writes it out as an OCI archive tar, plus a .sha256
+## checksum file — both are published as GitHub Release assets. The
+## checksum file is what opencode-proxy-update.timer polls every 6h on each
+## host to detect a new version without re-downloading the full image.
 image: check-buildkitd
 	BUILDKIT_HOST=$(BUILDKIT_HOST) buildctl build \
 	  --frontend dockerfile.v0 \
@@ -49,7 +50,8 @@ image: check-buildkitd
 	  --opt platform=$(IMAGE_PLATFORM) \
 	  --opt build-arg:TARGETARCH=arm64 \
 	  --output type=oci,name=docker.io/library/$(IMAGE_NAME):latest,dest=$(IMAGE_TAR)
-	@echo "wrote $(IMAGE_TAR) — attach this to the GitHub release as $(IMAGE_TAR)"
+	sha256sum $(IMAGE_TAR) > $(IMAGE_TAR).sha256
+	@echo "wrote $(IMAGE_TAR) and $(IMAGE_TAR).sha256 — attach both to the GitHub release"
 
 clean:
-	rm -f $(BINARY) $(IMAGE_TAR)
+	rm -f $(BINARY) $(IMAGE_TAR) $(IMAGE_TAR).sha256

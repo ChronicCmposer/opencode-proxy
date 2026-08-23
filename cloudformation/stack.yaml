@@ -63,6 +63,15 @@ Parameters:
     Type: String
     Default: docker.io/library/opencode-proxy:latest
     Description: Image reference embedded in opencode-proxy.tar by `make image` — must match Makefile's IMAGE_NAME.
+  UpdateScriptURL:
+    Type: String
+    Default: https://raw.githubusercontent.com/ChronicCmposer/opencode-proxy/main/scripts/update-image.sh
+    Description: >
+      Where the instance fetches the update-checker script from at boot.
+      scripts/update-image.sh in this repo is the single source of truth;
+      the instance re-fetches it once here rather than embedding a copy in
+      this template, so updates to the updater itself don't require a
+      stack redeploy.
 
 Resources:
   InstanceRole:
@@ -149,6 +158,7 @@ Resources:
           # registry involved.
           curl -fsSL -o /tmp/opencode-proxy.tar "${ImageTarURL}"
           ctr images import /tmp/opencode-proxy.tar
+          sha256sum /tmp/opencode-proxy.tar | awk '{print $1}' > /etc/opencode-proxy/current.sha256
           rm -f /tmp/opencode-proxy.tar
 
           cat > /etc/systemd/system/opencode-proxy.service <<UNIT
@@ -181,6 +191,50 @@ Resources:
 
           systemctl daemon-reload
           systemctl enable --now opencode-proxy
+
+          # Periodic self-update: checks a small checksum file every 6h and
+          # only pulls the full image when it actually changed. See
+          # scripts/update-image.sh for the checksum-compare / import /
+          # restart / auto-rollback logic — this is the same script and
+          # unit pair used on the local --local VM.
+          curl -fsSL -o /usr/local/bin/opencode-proxy-update.sh "${UpdateScriptURL}"
+          chmod +x /usr/local/bin/opencode-proxy-update.sh
+
+          cat > /etc/opencode-proxy/update.env <<ENV
+          IMAGE_TAR_URL=${ImageTarURL}
+          IMAGE_REF=${ImageRef}
+          SERVICE_NAME=opencode-proxy
+          STATE_DIR=/etc/opencode-proxy
+          ENV
+
+          cat > /etc/systemd/system/opencode-proxy-update.service <<'UNIT'
+          [Unit]
+          Description=Check for and apply opencode-proxy image updates
+          After=network-online.target containerd.service
+          Wants=network-online.target
+          Requires=containerd.service
+
+          [Service]
+          Type=oneshot
+          EnvironmentFile=/etc/opencode-proxy/update.env
+          ExecStart=/usr/local/bin/opencode-proxy-update.sh
+          UNIT
+
+          cat > /etc/systemd/system/opencode-proxy-update.timer <<'UNIT'
+          [Unit]
+          Description=Run opencode-proxy-update.service every 6 hours
+
+          [Timer]
+          OnBootSec=15min
+          OnUnitActiveSec=6h
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+          UNIT
+
+          systemctl daemon-reload
+          systemctl enable --now opencode-proxy-update.timer
 
   ElasticIP:
     Type: AWS::EC2::EIP
