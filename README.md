@@ -133,14 +133,39 @@ If you re-issued the cert after the instance already booted, SSH in
 opencode-proxy`, or just terminate the instance — the Elastic IP re-attaches
 to whatever CloudFormation replaces it with next `deploy.sh` run.
 
-## 4. Run `opencode web` and the local proxy on the Mac
+## 4. Run `opencode web` and the local proxy
+
+Two ways to run the local (`--local`) side; pick one.
+
+### Option A — inside a Debian VM (e.g. Parallels on the Mac)
+
+If `opencode web` already runs inside a Debian testing arm64 VM (Parallels,
+bridged networking, containerd already installed), deploy the **same**
+`opencode-proxy.tar` image built in step 1 as a container there — no
+separate local build, no Docker, just `ctr` like the EC2 side:
+
+```sh
+# on the VM, with the image tar and pki/out/{ca.crt,tunnel.crt,tunnel.key}
+# already copied over (scp, or a Parallels shared folder):
+sudo vm/deploy-local.sh opencode-proxy.tar pki/out wss://code.example.com/_tunnel
+```
+
+This installs containerd if it's missing, imports the image, and sets up an
+`opencode-proxy-local` systemd unit running `ctr run --net-host` — the
+container shares the VM's network namespace, so `--opencode-url
+http://127.0.0.1:4096` (the default) reaches `opencode web` running
+natively in the same VM. `systemctl status opencode-proxy-local` /
+`journalctl -u opencode-proxy-local -f` to check on it; `Restart=always`
+means it survives VM reboots and reconnects after the Mac sleeps.
+
+This script assumes the VM and `opencode web` are already up — it doesn't
+create the VM or install opencode.
+
+### Option B — native binary on macOS (no VM)
 
 ```sh
 OPENCODE_SERVER_PASSWORD=<your-password> opencode web --port 4096
 ```
-
-Install the local proxy as a launchd agent so it survives reboots and
-reconnects after sleep:
 
 ```sh
 sudo mkdir -p /usr/local/etc/opencode-proxy

@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Deploys the --local proxy as a container inside an already-running Debian
+# VM (e.g. a Parallels VM on the Mac), using the same opencode-proxy.tar
+# image and the same containerd/ctr mechanics as the EC2 --remote side —
+# see cloudformation/stack.yaml's UserData for the pattern this mirrors.
+#
+# Assumes: the VM is up, opencode itself is already running on
+# 127.0.0.1:4096 inside it, and you have root (sudo) on the VM. This script
+# only installs containerd if it's missing, imports the image, and sets up
+# the opencode-proxy-local systemd unit — it does not provision the VM or
+# install opencode.
+#
+# Usage (run as root on the VM, or via sudo):
+#   vm/deploy-local.sh <path-to-opencode-proxy.tar> <cert-dir> <remote-wss-url> [opencode-url]
+#
+# <cert-dir> must contain ca.crt, tunnel.crt, tunnel.key (from
+# pki/issue-tunnel.sh) — copy them in via scp or a Parallels shared folder
+# before running this.
+#
+# Example:
+#   vm/deploy-local.sh ./opencode-proxy.tar ./pki/out wss://code.example.com/_tunnel
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+  echo "error: run as root (sudo $0 ...)" >&2
+  exit 1
+fi
+if [[ $# -lt 3 ]]; then
+  echo "usage: $0 <path-to-opencode-proxy.tar> <cert-dir> <remote-wss-url> [opencode-url]" >&2
+  exit 1
+fi
+
+image_tar="$1"
+cert_dir="$2"
+remote_url="$3"
+opencode_url="${4:-http://127.0.0.1:4096}"
+image_ref="docker.io/library/opencode-proxy:latest" # must match Makefile's IMAGE_NAME
+
+for f in ca.crt tunnel.crt tunnel.key; do
+  if [[ ! -f "$cert_dir/$f" ]]; then
+    echo "error: $cert_dir/$f not found — copy the certs from pki/issue-tunnel.sh first" >&2
+    exit 1
+  fi
+done
+if [[ ! -f "$image_tar" ]]; then
+  echo "error: $image_tar not found" >&2
+  exit 1
+fi
+
+if ! command -v ctr >/dev/null 2>&1; then
+  echo "containerd/ctr not found — installing..."
+  apt-get update
+  apt-get install -y containerd
+fi
+systemctl enable --now containerd
+
+mkdir -p /etc/opencode-proxy
+install -m 644 "$cert_dir/ca.crt" /etc/opencode-proxy/ca.crt
+install -m 644 "$cert_dir/tunnel.crt" /etc/opencode-proxy/tunnel.crt
+install -m 600 "$cert_dir/tunnel.key" /etc/opencode-proxy/tunnel.key
+
+echo "importing $image_tar into containerd..."
+ctr images import "$image_tar"
+
+cat > /etc/systemd/system/opencode-proxy-local.service <<UNIT
+[Unit]
+Description=opencode-proxy local (containerd)
+After=network-online.target containerd.service
+Wants=network-online.target
+Requires=containerd.service
+
+[Service]
+# ctr run keeps the earlier container/task names around after a stop or
+# crash; clear them before each start so Restart=always doesn't fail with
+# "already exists".
+ExecStartPre=-/usr/bin/ctr task kill opencode-proxy-local
+ExecStartPre=-/usr/bin/ctr task rm opencode-proxy-local
+ExecStartPre=-/usr/bin/ctr container rm opencode-proxy-local
+ExecStart=/usr/bin/ctr run --rm --net-host \\
+  --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \\
+  ${image_ref} opencode-proxy-local \\
+  --local --remote-url ${remote_url} \\
+  --opencode-url ${opencode_url} \\
+  --ca /etc/opencode-proxy/ca.crt \\
+  --cert /etc/opencode-proxy/tunnel.crt \\
+  --key /etc/opencode-proxy/tunnel.key
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now opencode-proxy-local
+
+echo "done. check status with: systemctl status opencode-proxy-local"
+echo "and logs with:           journalctl -u opencode-proxy-local -f"
