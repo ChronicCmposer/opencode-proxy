@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Shared helpers for the pki/*.sh scripts. Sourced, not executed directly.
 set -euo pipefail
 

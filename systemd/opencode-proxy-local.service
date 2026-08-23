@@ -1,0 +1,27 @@
+[Unit]
+Description=opencode-proxy local (containerd)
+After=network-online.target containerd.service
+Wants=network-online.target
+Requires=containerd.service
+
+[Service]
+EnvironmentFile=/etc/opencode-proxy/local.env
+# ctr run keeps the earlier container/task names around after a stop or
+# crash; clear them before each start so Restart=always doesn't fail with
+# "already exists".
+ExecStartPre=-/usr/bin/ctr task kill opencode-proxy-local
+ExecStartPre=-/usr/bin/ctr task rm opencode-proxy-local
+ExecStartPre=-/usr/bin/ctr container rm opencode-proxy-local
+ExecStart=/usr/bin/ctr run --rm --net-host \
+  --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \
+  ${IMAGE_REF} opencode-proxy-local \
+  --local --remote-url ${REMOTE_URL} \
+  --opencode-url ${OPENCODE_URL} \
+  --ca /etc/opencode-proxy/ca.crt \
+  --cert /etc/opencode-proxy/tunnel.crt \
+  --key /etc/opencode-proxy/tunnel.key
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

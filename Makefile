@@ -16,7 +16,7 @@ generate-version:
 	scripts/generate-version.sh
 
 build: generate-version
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BINARY) ./cmd/opencode-proxy
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BINARY) .
 
 test: generate-version
 	go test ./...

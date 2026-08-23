@@ -1,6 +1,6 @@
 // Loopback integration test: browser -> remote proxy -> yamux tunnel ->
 // local proxy -> opencode, all on 127.0.0.1 with an in-memory CA.
-package internal_test
+package main
 
 import (
 	"bufio"
@@ -16,16 +16,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/ChronicCmposer/opencode-proxy/internal/local"
-	"github.com/ChronicCmposer/opencode-proxy/internal/remote"
-	"github.com/ChronicCmposer/opencode-proxy/internal/testca"
-	"github.com/ChronicCmposer/opencode-proxy/internal/tlsconf"
 )
 
 type harness struct {
 	t          *testing.T
-	ca         *testca.CA
+	ca         *testCA
 	opencode   *httpServer
 	remoteAddr string
 	deviceCert tls.Certificate
@@ -36,7 +31,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	t.Helper()
 	dir := t.TempDir()
 
-	ca, err := testca.New()
+	ca, err := newTestCA()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,36 +42,36 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 
 	oc := startHTTPServer(t, opencodeHandler)
 
-	serverLeaf, err := ca.Issue(testca.LeafOptions{
+	serverLeaf, err := ca.issue(testLeafOptions{
 		CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverCert, err := serverLeaf.TLSCert()
+	serverCert, err := serverLeaf.tlsCert()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tunnelLeaf, err := ca.Issue(testca.LeafOptions{CommonName: "home-mac", OU: tlsconf.OUTunnel})
+	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home-mac", OU: OUTunnel})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tunnelCert, err := tunnelLeaf.TLSCert()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	deviceLeaf, err := ca.Issue(testca.LeafOptions{CommonName: "phone", OU: tlsconf.OUDevice})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deviceCert, err := deviceLeaf.TLSCert()
+	tunnelCert, err := tunnelLeaf.tlsCert()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	pool, err := tlsconf.LoadCAPool(caPath)
+	deviceLeaf, err := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceCert, err := deviceLeaf.tlsCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pool, err := LoadCAPool(caPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,9 +87,9 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 	remoteAddr := ln.Addr().String()
-	ln.Close() // remote.Server binds its own listener via ListenAndServeTLS
+	ln.Close() // RemoteServer binds its own listener via ListenAndServeTLS
 
-	srv := remote.New(remote.Options{Addr: remoteAddr, TLS: remoteTLS})
+	srv := NewRemoteServer(RemoteOptions{Addr: remoteAddr, TLS: remoteTLS})
 	ctx, cancel := context.WithCancel(context.Background())
 	go srv.ListenAndServe(ctx)
 	t.Cleanup(cancel)
@@ -106,7 +101,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		ServerName:   "127.0.0.1",
 		MinVersion:   tls.VersionTLS12,
 	}
-	client, err := local.New(local.Options{
+	client, err := NewLocalClient(LocalOptions{
 		RemoteURL:   "wss://" + remoteAddr + "/_tunnel",
 		OpencodeURL: "http://" + oc.addr,
 		TLS:         localTLS,
@@ -125,7 +120,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 }
 
 func (h *harness) deviceHTTPClient() *http.Client {
-	pool, err := tlsconf.LoadCAPool(h.caPath)
+	pool, err := LoadCAPool(h.caPath)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -187,11 +182,11 @@ func TestRoundTripAndAuthorizationPassthrough(t *testing.T) {
 	if got := gotAuth.Load().(string); got != "Basic b3BlbmNvZGU6c2VjcmV0" {
 		t.Fatalf("Authorization header not preserved: got %q", got)
 	}
-	if got := resp.Header.Get(local.VersionHeader); got == "" {
-		t.Errorf("%s missing on proxied response", local.VersionHeader)
+	if got := resp.Header.Get(LocalVersionHeader); got == "" {
+		t.Errorf("%s missing on proxied response", LocalVersionHeader)
 	}
-	if got := resp.Header.Get(remote.VersionHeader); got == "" {
-		t.Errorf("%s missing on proxied response", remote.VersionHeader)
+	if got := resp.Header.Get(RemoteVersionHeader); got == "" {
+		t.Errorf("%s missing on proxied response", RemoteVersionHeader)
 	}
 }
 
@@ -247,24 +242,24 @@ func TestSSEIsStreamedIncrementally(t *testing.T) {
 
 func TestNoTunnelReturns503(t *testing.T) {
 	dir := t.TempDir()
-	ca, err := testca.New()
+	ca, err := newTestCA()
 	if err != nil {
 		t.Fatal(err)
 	}
 	caPath := filepath.Join(dir, "ca.crt")
 	os.WriteFile(caPath, ca.CertPEM, 0o600)
 
-	serverLeaf, _ := ca.Issue(testca.LeafOptions{CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true})
-	serverCert, _ := serverLeaf.TLSCert()
-	deviceLeaf, _ := ca.Issue(testca.LeafOptions{CommonName: "phone", OU: tlsconf.OUDevice})
-	deviceCert, _ := deviceLeaf.TLSCert()
-	pool, _ := tlsconf.LoadCAPool(caPath)
+	serverLeaf, _ := ca.issue(testLeafOptions{CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true})
+	serverCert, _ := serverLeaf.tlsCert()
+	deviceLeaf, _ := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
+	deviceCert, _ := deviceLeaf.tlsCert()
+	pool, _ := LoadCAPool(caPath)
 
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := remote.New(remote.Options{Addr: addr, TLS: &tls.Config{
+	srv := NewRemoteServer(RemoteOptions{Addr: addr, TLS: &tls.Config{
 		Certificates: []tls.Certificate{serverCert}, ClientCAs: pool,
 		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12,
 	}})
@@ -284,11 +279,11 @@ func TestNoTunnelReturns503(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
-	if got := resp.Header.Get(remote.VersionHeader); got == "" {
-		t.Errorf("%s missing on 503 response", remote.VersionHeader)
+	if got := resp.Header.Get(RemoteVersionHeader); got == "" {
+		t.Errorf("%s missing on 503 response", RemoteVersionHeader)
 	}
-	if got := resp.Header.Get(local.VersionHeader); got != "" {
-		t.Errorf("%s unexpectedly present with no tunnel connected: %q", local.VersionHeader, got)
+	if got := resp.Header.Get(LocalVersionHeader); got != "" {
+		t.Errorf("%s unexpectedly present with no tunnel connected: %q", LocalVersionHeader, got)
 	}
 }
 
@@ -306,19 +301,19 @@ func TestNoClientCertRejected(t *testing.T) {
 func TestCertFromDifferentCARejected(t *testing.T) {
 	h := newHarness(t, http.NewServeMux())
 
-	otherCA, err := testca.New()
+	otherCA, err := newTestCA()
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherLeaf, err := otherCA.Issue(testca.LeafOptions{CommonName: "impostor", OU: tlsconf.OUDevice})
+	otherLeaf, err := otherCA.issue(testLeafOptions{CommonName: "impostor", OU: OUDevice})
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherCert, err := otherLeaf.TLSCert()
+	otherCert, err := otherLeaf.tlsCert()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool, _ := tlsconf.LoadCAPool(h.caPath)
+	pool, _ := LoadCAPool(h.caPath)
 	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{otherCert}, RootCAs: pool, ServerName: "127.0.0.1",
 	}}}

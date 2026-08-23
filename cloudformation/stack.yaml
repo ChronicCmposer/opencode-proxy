@@ -63,15 +63,16 @@ Parameters:
     Type: String
     Default: docker.io/library/opencode-proxy:latest
     Description: Image reference embedded in opencode-proxy.tar by `make image` — must match Makefile's IMAGE_NAME.
-  UpdateScriptURL:
+  RepoRef:
     Type: String
-    Default: https://raw.githubusercontent.com/ChronicCmposer/opencode-proxy/main/scripts/update-image.sh
+    Default: main
     Description: >
-      Where the instance fetches the update-checker script from at boot.
-      scripts/update-image.sh in this repo is the single source of truth;
-      the instance re-fetches it once here rather than embedding a copy in
-      this template, so updates to the updater itself don't require a
-      stack redeploy.
+      Git tag/branch/commit the instance fetches a repo tarball from at
+      boot (via codeload.github.com), to pull scripts/update-image.sh and
+      the systemd/*.service|*.timer unit files. Those files in this repo
+      are the single source of truth; the instance re-fetches them once
+      here rather than embedding copies in this template, so updates to
+      the updater or unit files don't require a stack redeploy.
 
 Resources:
   InstanceRole:
@@ -141,7 +142,7 @@ Resources:
           set -eux
           trap '/opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}' EXIT
 
-          dnf install -y awscli containerd || yum install -y awscli containerd
+          dnf install -y awscli containerd tar || yum install -y awscli containerd tar
           systemctl enable --now containerd
 
           mkdir -p /etc/opencode-proxy
@@ -158,39 +159,23 @@ Resources:
           sha256sum /tmp/opencode-proxy.tar | awk '{print $1}' > /etc/opencode-proxy/current.sha256
           rm -f /tmp/opencode-proxy.tar
 
-          cat > /etc/systemd/system/opencode-proxy.service <<UNIT
-          [Unit]
-          Description=opencode-proxy remote (containerd)
-          After=network-online.target containerd.service
-          Wants=network-online.target
-          Requires=containerd.service
+          # Fetch this ref's systemd units and update script as a tarball
+          # rather than embedding them in this template, so updates to
+          # them don't require a stack redeploy. Cleaned up at the end.
+          curl -fsSL -o /tmp/opencode-proxy-src.tar.gz \
+            "https://codeload.github.com/ChronicCmposer/opencode-proxy/tar.gz/${RepoRef}"
+          mkdir -p /tmp/opencode-proxy-src
+          tar -xzf /tmp/opencode-proxy-src.tar.gz -C /tmp/opencode-proxy-src --strip-components=1
 
-          [Service]
-          # ctr run keeps the earlier container/task names around after a
-          # stop or crash; clear them before each start so Restart=always
-          # doesn't fail with "already exists".
-          ExecStartPre=-/usr/bin/ctr task kill opencode-proxy
-          ExecStartPre=-/usr/bin/ctr task rm opencode-proxy
-          ExecStartPre=-/usr/bin/ctr container rm opencode-proxy
-          ExecStart=/usr/bin/ctr run --rm --net-host \
-            --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \
-            ${ImageRef} opencode-proxy \
-            --remote --addr :443 \
-            --ca /etc/opencode-proxy/ca.crt \
-            --cert /etc/opencode-proxy/server.crt \
-            --key /etc/opencode-proxy/server.key
-          Restart=always
-          RestartSec=2
-
-          [Install]
-          WantedBy=multi-user.target
-          UNIT
+          cat > /etc/opencode-proxy/remote.env <<ENV
+          IMAGE_REF=${ImageRef}
+          ENV
+          install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy.service /etc/systemd/system/opencode-proxy.service
 
           systemctl daemon-reload
           systemctl enable --now opencode-proxy
 
-          curl -fsSL -o /usr/local/bin/opencode-proxy-update.sh "${UpdateScriptURL}"
-          chmod +x /usr/local/bin/opencode-proxy-update.sh
+          install -m 755 /tmp/opencode-proxy-src/scripts/update-image.sh /usr/local/bin/opencode-proxy-update.sh
 
           cat > /etc/opencode-proxy/update.env <<ENV
           IMAGE_TAR_URL=${ImageTarURL}
@@ -199,31 +184,10 @@ Resources:
           STATE_DIR=/etc/opencode-proxy
           ENV
 
-          cat > /etc/systemd/system/opencode-proxy-update.service <<'UNIT'
-          [Unit]
-          Description=Check for and apply opencode-proxy image updates
-          After=network-online.target containerd.service
-          Wants=network-online.target
-          Requires=containerd.service
+          install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy-update.service /etc/systemd/system/opencode-proxy-update.service
+          install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy-update.timer /etc/systemd/system/opencode-proxy-update.timer
 
-          [Service]
-          Type=oneshot
-          EnvironmentFile=/etc/opencode-proxy/update.env
-          ExecStart=/usr/local/bin/opencode-proxy-update.sh
-          UNIT
-
-          cat > /etc/systemd/system/opencode-proxy-update.timer <<'UNIT'
-          [Unit]
-          Description=Run opencode-proxy-update.service every 6 hours
-
-          [Timer]
-          OnBootSec=15min
-          OnUnitActiveSec=6h
-          Persistent=true
-
-          [Install]
-          WantedBy=timers.target
-          UNIT
+          rm -rf /tmp/opencode-proxy-src.tar.gz /tmp/opencode-proxy-src
 
           systemctl daemon-reload
           systemctl enable --now opencode-proxy-update.timer

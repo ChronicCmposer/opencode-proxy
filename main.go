@@ -15,10 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/ChronicCmposer/opencode-proxy/internal/local"
-	"github.com/ChronicCmposer/opencode-proxy/internal/remote"
-	"github.com/ChronicCmposer/opencode-proxy/internal/tlsconf"
 )
 
 func main() {
@@ -56,30 +52,38 @@ func run() error {
 	defer stop()
 
 	if *isLocal {
-		if *remoteURL == "" {
-			return fmt.Errorf("--remote-url is required with --local")
-		}
-		tlsConf, err := tlsconf.ClientConfig(*caPath, *certPath, *keyPath, *serverName)
-		if err != nil {
-			return err
-		}
-		client, err := local.New(local.Options{
-			RemoteURL:   *remoteURL,
-			OpencodeURL: *opencodeURL,
-			TLS:         tlsConf,
-		})
-		if err != nil {
-			return err
-		}
-		return client.Run(ctx)
+		return runLocal(ctx, *caPath, *certPath, *keyPath, *remoteURL, *opencodeURL, *serverName)
+	} else {
+		return runRemote(ctx, *caPath, *certPath, *keyPath, *addr)
 	}
+}
 
-	tlsConf, err := tlsconf.ServerConfig(*caPath, *certPath, *keyPath)
+func runLocal(ctx context.Context, caPath, certPath, keyPath, remoteURL, opencodeURL, serverName string) error {
+	if remoteURL == "" {
+		return fmt.Errorf("--remote-url is required with --local")
+	}
+	tlsConf, err := ClientConfig(caPath, certPath, keyPath, serverName)
 	if err != nil {
 		return err
 	}
-	srv := remote.New(remote.Options{
-		Addr:   *addr,
+	client, err := NewLocalClient(LocalOptions{
+		RemoteURL:   remoteURL,
+		OpencodeURL: opencodeURL,
+		TLS:         tlsConf,
+	})
+	if err != nil {
+		return err
+	}
+	return client.Run(ctx)
+}
+
+func runRemote(ctx context.Context, caPath, certPath, keyPath, addr string) error {
+	tlsConf, err := ServerConfig(caPath, certPath, keyPath)
+	if err != nil {
+		return err
+	}
+	srv := NewRemoteServer(RemoteOptions{
+		Addr:   addr,
 		TLS:    tlsConf,
 		Logger: log.Default(),
 	})

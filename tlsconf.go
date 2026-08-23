@@ -1,10 +1,9 @@
-// Package tlsconf builds the mutual-TLS configurations used by both halves
-// of the proxy, and enforces the certificate identity split between tunnel
-// endpoints and browser devices. mTLS alone proves a peer belongs to the
-// private CA, not which role it holds; the role is carried in the leaf's
-// Organizational Unit, so a stolen device certificate can't impersonate the
-// tunnel endpoint.
-package tlsconf
+// The mutual-TLS configurations used by both halves of the proxy, and the
+// certificate identity split between tunnel endpoints and browser devices.
+// mTLS alone proves a peer belongs to the private CA, not which role it
+// holds; the role is carried in the leaf's Organizational Unit, so a
+// stolen device certificate can't impersonate the tunnel endpoint.
+package main
 
 import (
 	"crypto/tls"

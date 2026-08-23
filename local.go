@@ -1,7 +1,7 @@
-// Package local implements the Mac-side half of the proxy: it dials the
-// remote tunnel outbound, reconnecting with backoff, and reverse-proxies
-// every request that arrives over it to opencode's local HTTP server.
-package local
+// The Mac-side half of the proxy: it dials the remote tunnel outbound,
+// reconnecting with backoff, and reverse-proxies every request that
+// arrives over it to opencode's local HTTP server.
+package main
 
 import (
 	"context"
@@ -12,27 +12,24 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
-
-	"github.com/ChronicCmposer/opencode-proxy/internal/tunnel"
-	"github.com/ChronicCmposer/opencode-proxy/internal/version"
 )
 
-const VersionHeader = "X-Opencode-Proxy-Local-Version"
+const LocalVersionHeader = "X-Opencode-Proxy-Local-Version"
 
-type Options struct {
+type LocalOptions struct {
 	RemoteURL   string
 	OpencodeURL string
 	TLS         *tls.Config
 	Logger      *log.Logger
 }
 
-type Client struct {
-	opts  Options
+type LocalClient struct {
+	opts  LocalOptions
 	log   *log.Logger
 	proxy *httputil.ReverseProxy
 }
 
-func New(opts Options) (*Client, error) {
+func NewLocalClient(opts LocalOptions) (*LocalClient, error) {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
@@ -56,16 +53,16 @@ func New(opts Options) (*Client, error) {
 		l.Printf("opencode proxy error for %s: %v", r.URL.Path, err)
 		http.Error(w, "opencode unreachable", http.StatusBadGateway)
 	}
-	return &Client{opts: opts, log: l, proxy: proxy}, nil
+	return &LocalClient{opts: opts, log: l, proxy: proxy}, nil
 }
 
-func (c *Client) Run(ctx context.Context) error {
-	b := tunnel.NewBackoff()
+func (c *LocalClient) Run(ctx context.Context) error {
+	b := NewBackoff()
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		sess, err := tunnel.Dial(ctx, c.opts.RemoteURL, c.opts.TLS)
+		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.opts.TLS)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !sleepCtx(ctx, b.Next()) {
@@ -76,7 +73,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
 		b.Reset()
 
-		srv := &http.Server{Handler: withVersionHeader(c.proxy)}
+		srv := &http.Server{Handler: localWithVersionHeader(c.proxy)}
 		serveErr := make(chan error, 1)
 		go func() { serveErr <- srv.Serve(sess) }()
 
@@ -98,11 +95,11 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-// See remote.withVersionHeader for why pre-setting the header is safe with
+// See remoteWithVersionHeader for why pre-setting the header is safe with
 // httputil.ReverseProxy.
-func withVersionHeader(next http.Handler) http.Handler {
+func localWithVersionHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(VersionHeader, version.Version)
+		w.Header().Set(LocalVersionHeader, Version)
 		next.ServeHTTP(w, r)
 	})
 }

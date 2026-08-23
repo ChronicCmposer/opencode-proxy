@@ -1,6 +1,6 @@
 # opencode-proxy
 
-Reach `opencode web` running on your home Mac from anywhere — cellular
+Reach `opencode serve` running on your home Mac from anywhere — cellular
 included — without port-forwarding your home router.
 
 ## How it works
@@ -10,7 +10,7 @@ client/server direction: `opencode-proxy --local` dials **out** from the Mac
 to a small AWS host and holds that connection open as a multiplexed tunnel
 (WebSocket + [yamux](https://github.com/hashicorp/yamux)).
 `opencode-proxy --remote` sits on the AWS host, takes requests from your
-browser, and forwards each one down the tunnel to `opencode web` on the Mac.
+browser, and forwards each one down the tunnel to `opencode serve` on the Mac.
 
 Every link is mutual TLS against a private CA you control — the browser must
 present a device certificate, and the Mac must present a tunnel certificate,
@@ -19,7 +19,7 @@ before either can do anything. opencode's own password
 host never sees or stores it.
 
 ```
- phone (cellular) --mTLS--> AWS EC2 (--remote) <--mTLS-- MacBook (--local) --> opencode web
+ phone (cellular) --mTLS--> AWS EC2 (--remote) <--mTLS-- MacBook (--local) --> opencode serve
 ```
 
 ## 1. Build
@@ -69,7 +69,7 @@ no shell, no package manager, nothing but `/opencode-proxy`.
 ### Versioning and releases
 
 Every build embeds a version — `make build`/`make test`/`make image` all
-depend on `make generate-version`, which writes `internal/version/version.go`
+depend on `make generate-version`, which writes `version.go`
 from `git describe` (gitignored, regenerated every time; a plain `go build`
 without going through `make` first will fail to compile, since that file
 won't exist yet). On an exactly-tagged, clean commit this is just the tag
@@ -112,7 +112,10 @@ timers) point at `.../releases/latest/download/opencode-proxy.tar` and its
 `issue-client.sh` also emits `pki/out/phone.mobileconfig` — an Apple
 configuration profile bundling CA trust and the device identity in one
 install, and `phone.p12` for manual import elsewhere. See `pki/renew.sh` —
-leaf certs are valid 90 days.
+leaf certs (server, tunnel, and device) are valid **90 days**; the CA itself
+(`init-ca.sh`) is valid **10 years** and isn't tracked by `renew.sh` — a
+CA renewal means re-issuing every leaf cert too, so it's intentionally a
+manual, rare operation rather than an automated one.
 
 **Keep `pki/out/ca.key` off any machine you don't fully trust.** It's the
 root of everything reachable through the tunnel.
@@ -156,9 +159,9 @@ If you re-issued the cert after the instance already booted, SSH in
 opencode-proxy`, or just terminate the instance — the Elastic IP re-attaches
 to whatever CloudFormation replaces it with next `deploy.sh` run.
 
-## 4. Run `opencode web` and the local proxy
+## 4. Run `opencode serve` and the local proxy
 
-`opencode web` runs inside a Debian testing arm64 VM (Parallels, bridged
+`opencode serve` runs inside a Debian testing arm64 VM (Parallels, bridged
 networking, containerd already installed). Deploy the **same**
 `opencode-proxy.tar` image built in step 1 as a container there — no
 separate local build, no Docker, just `ctr` like the EC2 side:
@@ -172,12 +175,12 @@ sudo vm/deploy-local.sh opencode-proxy.tar pki/out wss://code.example.com/_tunne
 This installs containerd if it's missing, imports the image, and sets up an
 `opencode-proxy-local` systemd unit running `ctr run --net-host` — the
 container shares the VM's network namespace, so `--opencode-url
-http://127.0.0.1:4096` (the default) reaches `opencode web` running
+http://127.0.0.1:4096` (the default) reaches `opencode serve` running
 natively in the same VM. `systemctl status opencode-proxy-local` /
 `journalctl -u opencode-proxy-local -f` to check on it; `Restart=always`
 means it survives VM reboots and reconnects after the Mac sleeps.
 
-This script assumes the VM and `opencode web` are already up — it doesn't
+This script assumes the VM and `opencode serve` are already up — it doesn't
 create the VM or install opencode.
 
 ### Staying up to date

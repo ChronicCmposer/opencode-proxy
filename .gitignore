@@ -1,6 +1,6 @@
 pki/out/
 *.log
-internal/version/version.go
+/version.go
 /opencode-proxy
 /opencode-proxy.tar
 /opencode-proxy.tar.sha256

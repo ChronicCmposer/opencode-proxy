@@ -1,7 +1,7 @@
-// Package remote implements the AWS-side half of the proxy: a public mTLS
-// listener that accepts the home tunnel connection on Path and forwards
-// every other request through it to opencode running on the Mac.
-package remote
+// The AWS-side half of the proxy: a public mTLS listener that accepts the
+// home tunnel connection on TunnelPath and forwards every other request
+// through it to opencode running on the Mac.
+package main
 
 import (
 	"context"
@@ -13,34 +13,30 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
-
-	"github.com/ChronicCmposer/opencode-proxy/internal/tlsconf"
-	"github.com/ChronicCmposer/opencode-proxy/internal/tunnel"
-	"github.com/ChronicCmposer/opencode-proxy/internal/version"
 )
 
-const VersionHeader = "X-Opencode-Proxy-Remote-Version"
+const RemoteVersionHeader = "X-Opencode-Proxy-Remote-Version"
 
-type Options struct {
+type RemoteOptions struct {
 	Addr   string
 	TLS    *tls.Config
 	Logger *log.Logger
 }
 
-type Server struct {
-	opts Options
+type RemoteServer struct {
+	opts RemoteOptions
 	reg  sessionRegistry
 	log  *log.Logger
 
 	proxy *httputil.ReverseProxy
 }
 
-func New(opts Options) *Server {
+func NewRemoteServer(opts RemoteOptions) *RemoteServer {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
 	}
-	s := &Server{opts: opts, log: l}
+	s := &RemoteServer{opts: opts, log: l}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// opencode.tunnel is never resolved: DialContext below ignores
@@ -69,11 +65,11 @@ func New(opts Options) *Server {
 	return s
 }
 
-func (s *Server) ListenAndServe(ctx context.Context) error {
+func (s *RemoteServer) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:      s.opts.Addr,
 		TLSConfig: s.opts.TLS,
-		Handler:   withVersionHeader(http.HandlerFunc(s.handle)),
+		Handler:   remoteWithVersionHeader(http.HandlerFunc(s.handle)),
 	}
 	go func() {
 		<-ctx.Done()
@@ -92,19 +88,19 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // safe and covers every response path uniformly, including 403/503:
 // httputil.ReverseProxy only adds backend headers via copyHeader, it never
 // clears what's already on the ResponseWriter.
-func withVersionHeader(next http.Handler) http.Handler {
+func remoteWithVersionHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(VersionHeader, version.Version)
+		w.Header().Set(RemoteVersionHeader, Version)
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+func (s *RemoteServer) handle(w http.ResponseWriter, r *http.Request) {
 	state := r.TLS
 
-	if r.URL.Path == tunnel.Path {
-		if err := tlsconf.RequireOU(state, tlsconf.OUTunnel); err != nil {
-			s.log.Printf("rejected tunnel upgrade from %s: %v", tlsconf.PeerName(state), err)
+	if r.URL.Path == TunnelPath {
+		if err := RequireOU(state, OUTunnel); err != nil {
+			s.log.Printf("rejected tunnel upgrade from %s: %v", PeerName(state), err)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -112,21 +108,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := tlsconf.RequireOU(state, tlsconf.OUDevice); err != nil {
-		s.log.Printf("rejected request from %s: %v", tlsconf.PeerName(state), err)
+	if err := RequireOU(state, OUDevice); err != nil {
+		s.log.Printf("rejected request from %s: %v", PeerName(state), err)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	s.proxy.ServeHTTP(w, r)
 }
 
-func (s *Server) acceptTunnel(w http.ResponseWriter, r *http.Request) {
-	sess, err := tunnel.Accept(w, r)
+func (s *RemoteServer) acceptTunnel(w http.ResponseWriter, r *http.Request) {
+	sess, err := AcceptTunnel(w, r)
 	if err != nil {
 		s.log.Printf("tunnel accept failed: %v", err)
 		return
 	}
-	s.log.Printf("tunnel connected from %s", tlsconf.PeerName(r.TLS))
+	s.log.Printf("tunnel connected from %s", PeerName(r.TLS))
 	s.reg.set(sess)
 	<-sess.CloseChan()
 	s.reg.clear(sess)

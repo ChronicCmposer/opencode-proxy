@@ -5,7 +5,16 @@
 #   IMAGE_REF       e.g. docker.io/library/opencode-proxy:latest
 #   SERVICE_NAME    e.g. opencode-proxy or opencode-proxy-local
 #   STATE_DIR       default /etc/opencode-proxy
+#
+# No `sudo` calls in here: this always runs as root already, via the
+# opencode-proxy-update.service systemd unit (no User= set, so systemd
+# runs it as root), same as the ctr/systemctl commands it wraps require.
 set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+  echo "error: run as root (this is normally invoked by opencode-proxy-update.service)" >&2
+  exit 1
+fi
 
 : "${IMAGE_TAR_URL:?IMAGE_TAR_URL must be set}"
 : "${IMAGE_REF:?IMAGE_REF must be set}"

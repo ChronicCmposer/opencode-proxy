@@ -1,6 +1,6 @@
-// Package testca generates an in-memory CA and leaf certificates for tests,
-// so the test suite doesn't depend on the openssl scripts in pki/.
-package testca
+// An in-memory CA and leaf certificates for tests, so the test suite
+// doesn't depend on the openssl scripts in pki/.
+package main
 
 import (
 	"crypto/ecdsa"
@@ -15,13 +15,13 @@ import (
 	"time"
 )
 
-type CA struct {
+type testCA struct {
 	Cert    *x509.Certificate
 	CertPEM []byte
 	key     *ecdsa.PrivateKey
 }
 
-func New() (*CA, error) {
+func newTestCA() (*testCA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -43,22 +43,22 @@ func New() (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CA{Cert: cert, CertPEM: pemEncode("CERTIFICATE", der), key: key}, nil
+	return &testCA{Cert: cert, CertPEM: pemEncode("CERTIFICATE", der), key: key}, nil
 }
 
-type LeafOptions struct {
+type testLeafOptions struct {
 	CommonName string
 	OU         string
 	DNSNames   []string
 	IsServer   bool // sets serverAuth EKU in addition to clientAuth
 }
 
-type Leaf struct {
+type testLeaf struct {
 	CertPEM []byte
 	KeyPEM  []byte
 }
 
-func (ca *CA) Issue(opts LeafOptions) (*Leaf, error) {
+func (ca *testCA) issue(opts testLeafOptions) (*testLeaf, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -92,13 +92,13 @@ func (ca *CA) Issue(opts LeafOptions) (*Leaf, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Leaf{
+	return &testLeaf{
 		CertPEM: pemEncode("CERTIFICATE", der),
 		KeyPEM:  pemEncode("EC PRIVATE KEY", keyDER),
 	}, nil
 }
 
-func (l *Leaf) TLSCert() (tls.Certificate, error) {
+func (l *testLeaf) tlsCert() (tls.Certificate, error) {
 	return tls.X509KeyPair(l.CertPEM, l.KeyPEM)
 }
 
