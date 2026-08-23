@@ -50,8 +50,12 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 
 // NewRemoteHandler is the top-level request handler: it splits tunnel
 // upgrades on TunnelPath from ordinary device requests, enforcing each
-// side's required client-certificate role before dispatch.
-func NewRemoteHandler(proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigs *YamuxConfigFactory, l *log.Logger) http.Handler {
+// side's required client-certificate role before dispatch. ctx governs the
+// server's lifetime: acceptTunnel closes an active tunnel session when ctx
+// is cancelled, mirroring LocalClient.Run's shutdown handling on the other
+// end — without it, a hijacked tunnel connection is invisible to
+// http.Server.Shutdown and would only end when the process itself exits.
+func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigs *YamuxConfigFactory, l *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
 
@@ -61,7 +65,7 @@ func NewRemoteHandler(proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxC
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			acceptTunnel(w, r, reg, yamuxConfigs, l)
+			acceptTunnel(ctx, w, r, reg, yamuxConfigs, l)
 			return
 		}
 
@@ -74,7 +78,7 @@ func NewRemoteHandler(proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxC
 	})
 }
 
-func acceptTunnel(w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigs *YamuxConfigFactory, l *log.Logger) {
+func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigs *YamuxConfigFactory, l *log.Logger) {
 	sess, err := AcceptTunnel(w, r, yamuxConfigs)
 	if err != nil {
 		l.Printf("tunnel accept failed: %v", err)
@@ -82,9 +86,14 @@ func acceptTunnel(w http.ResponseWriter, r *http.Request, reg *SessionRegistry, 
 	}
 	l.Printf("tunnel connected from %s", PeerName(r.TLS))
 	reg.Set(sess)
-	<-sess.CloseChan()
+	select {
+	case <-ctx.Done():
+		sess.Close()
+		l.Printf("tunnel closed on shutdown")
+	case <-sess.CloseChan():
+		l.Printf("tunnel disconnected")
+	}
 	reg.Clear(sess)
-	l.Printf("tunnel disconnected")
 }
 
 // NewRemoteHTTPServer wraps handler with the addr/TLS the public listener

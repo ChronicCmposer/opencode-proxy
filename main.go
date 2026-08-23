@@ -17,10 +17,6 @@ import (
 	"syscall"
 )
 
-// Version is the build version, set via -ldflags "-X main.Version=...";
-// it falls back to "dev" for unversioned builds.
-var Version = "dev"
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "opencode-proxy:", err)
@@ -76,7 +72,7 @@ func runLocal(ctx context.Context, caPath, certPath, keyPath, remoteURL, opencod
 		return err
 	}
 	dialers := NewTunnelDialerFactory(tlsConf)
-	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, proxy))
+	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
 	yamuxConfigs := NewYamuxConfigFactory()
 	backoff := NewBackoff()
 	client := NewLocalClient(LocalOptions{
@@ -95,7 +91,7 @@ func runRemote(ctx context.Context, caPath, certPath, keyPath, addr string) erro
 	reg := &SessionRegistry{}
 	proxy := NewRemoteProxy(reg, l)
 	yamuxConfigs := NewYamuxConfigFactory()
-	handler := WithVersionHeader(RemoteVersionHeader, NewRemoteHandler(proxy, reg, yamuxConfigs, l))
+	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, yamuxConfigs, l))
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)
 	return srv.ListenAndServe(ctx)

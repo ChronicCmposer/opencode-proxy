@@ -94,10 +94,10 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	reg := &SessionRegistry{}
 	remoteProxy := NewRemoteProxy(reg, remoteLog)
 	remoteYamuxConfigs := NewYamuxConfigFactory()
-	remoteHandler := WithVersionHeader(RemoteVersionHeader, NewRemoteHandler(remoteProxy, reg, remoteYamuxConfigs, remoteLog))
+	ctx, cancel := context.WithCancel(context.Background())
+	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, remoteProxy, reg, remoteYamuxConfigs, remoteLog))
 	httpSrv := NewRemoteHTTPServer(remoteAddr, remoteTLS, remoteHandler)
 	srv := NewRemoteServer(httpSrv)
-	ctx, cancel := context.WithCancel(context.Background())
 	go srv.ListenAndServe(ctx)
 	t.Cleanup(cancel)
 	waitForListener(t, remoteAddr)
@@ -113,7 +113,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 	dialers := NewTunnelDialerFactory(localTLS)
-	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, proxy))
+	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
 	yamuxConfigs := NewYamuxConfigFactory()
 	backoff := NewBackoff()
 	client := NewLocalClient(LocalOptions{
@@ -277,10 +277,10 @@ func TestNoTunnelReturns503(t *testing.T) {
 	reg := &SessionRegistry{}
 	proxy := NewRemoteProxy(reg, l)
 	yamuxConfigs := NewYamuxConfigFactory()
-	handler := WithVersionHeader(RemoteVersionHeader, NewRemoteHandler(proxy, reg, yamuxConfigs, l))
-	srv := NewRemoteServer(NewRemoteHTTPServer(addr, tlsConf, handler))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, yamuxConfigs, l))
+	srv := NewRemoteServer(NewRemoteHTTPServer(addr, tlsConf, handler))
 	go srv.ListenAndServe(ctx)
 	waitForListener(t, addr)
 

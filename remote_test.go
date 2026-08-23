@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,7 @@ func newTestRemoteHandler(t *testing.T) (http.Handler, *SessionRegistry) {
 	t.Helper()
 	reg := &SessionRegistry{}
 	proxy := NewRemoteProxy(reg, log.Default())
-	handler := NewRemoteHandler(proxy, reg, NewYamuxConfigFactory(), log.Default())
+	handler := NewRemoteHandler(context.Background(), proxy, reg, NewYamuxConfigFactory(), log.Default())
 	return handler, reg
 }
 
