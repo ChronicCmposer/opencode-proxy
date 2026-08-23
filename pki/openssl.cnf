@@ -1,0 +1,17 @@
+# Root CA profile for the opencode-proxy private CA. Used only by
+# init-ca.sh; leaf certificates build their own extension file inline (see
+# lib.sh) so their SANs and Organizational Units can vary per invocation.
+
+[req]
+distinguished_name = dn
+prompt              = no
+default_md          = sha256
+
+[dn]
+O  = opencode-proxy
+CN = opencode-proxy root CA
+
+[v3_ca]
+basicConstraints       = critical, CA:true
+keyUsage                = critical, keyCertSign, cRLSign
+subjectKeyIdentifier    = hash

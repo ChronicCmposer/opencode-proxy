@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  opencode-proxy remote host: a single small EC2 instance behind an Elastic
+  IP running the --remote half of the proxy on :443. mTLS is the only access
+  control (the security group leaves 443 open to the internet); SSH is
+  restricted to AdminCidr. Certificates are pulled from SSM Parameter Store
+  at boot rather than baked into the AMI or template, since CloudFormation
+  cannot author SecureString parameters itself — see README.md for the
+  upload step that must happen before this stack is deployed.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+    AllowedValues: [t4g.nano, t4g.micro, t3.micro, t3.small]
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 key pair for emergency SSH access.
+  AdminCidr:
+    Type: String
+    Description: CIDR allowed to SSH in (e.g. your home /32). Never 0.0.0.0/0.
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+  DomainName:
+    Type: String
+    Description: The DNS name you will point at the stack's Elastic IP (informational; used only in tags/outputs).
+  CertParamPrefix:
+    Type: String
+    Default: /opencode-proxy/server
+    Description: >
+      SSM Parameter Store path prefix holding the server cert material,
+      uploaded by pki/issue-server.sh before this stack is deployed. Expects
+      SecureString parameters at {prefix}/ca.crt, {prefix}/server.crt,
+      {prefix}/server.key.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Resolved via SSM public parameter so no AMI ID is hardcoded per-region.
+
+Resources:
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadCertParams
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CertParamPrefix}/*
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/ssm
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: opencode-proxy remote host
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTPS — mTLS is the real access control, not this rule.
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+          Description: Emergency SSH from AdminCidr only.
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups: [!Ref SecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeType: gp3, VolumeSize: 8, DeleteOnTermination: true }
+      Tags:
+        - { Key: Name, Value: !Sub "opencode-proxy-${DomainName}" }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          trap '/opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}' EXIT
+
+          dnf install -y awscli || yum install -y awscli
+
+          mkdir -p /etc/opencode-proxy
+          for f in ca.crt server.crt server.key; do
+            aws ssm get-parameter --name "${CertParamPrefix}/$f" --with-decryption \
+              --region ${AWS::Region} --query Parameter.Value --output text \
+              > "/etc/opencode-proxy/$f"
+          done
+          chmod 600 /etc/opencode-proxy/server.key
+          chmod 644 /etc/opencode-proxy/ca.crt /etc/opencode-proxy/server.crt
+
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then GOARCH=arm64; else GOARCH=amd64; fi
+          # The binary is expected to already be reachable at this URL (built
+          # and published by CI, or copied up manually before first boot —
+          # see README.md "Deploying the binary").
+          curl -fsSL -o /usr/local/bin/opencode-proxy \
+            "https://github.com/ChronicCmposer/opencode-proxy/releases/latest/download/opencode-proxy-linux-${!GOARCH}"
+          chmod +x /usr/local/bin/opencode-proxy
+
+          cat > /etc/systemd/system/opencode-proxy.service <<'UNIT'
+          [Unit]
+          Description=opencode-proxy remote
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          ExecStart=/usr/local/bin/opencode-proxy --remote --addr :443 \
+            --ca /etc/opencode-proxy/ca.crt \
+            --cert /etc/opencode-proxy/server.crt \
+            --key /etc/opencode-proxy/server.key
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
+          Restart=always
+          RestartSec=2
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          systemctl daemon-reload
+          systemctl enable --now opencode-proxy
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref Instance
+      EIP: !Ref ElasticIP
+
+Outputs:
+  ElasticIP:
+    Description: Point DomainName's A record at this IP.
+    Value: !Ref ElasticIP
+  InstanceId:
+    Value: !Ref Instance

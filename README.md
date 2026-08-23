@@ -1,1 +1,153 @@
 # opencode-proxy
+
+Reach `opencode web` running on your home Mac from anywhere — cellular
+included — without port-forwarding your home router.
+
+## How it works
+
+The Mac can only make outbound connections, so the proxy inverts the usual
+client/server direction: `opencode-proxy --local` dials **out** from the Mac
+to a small AWS host and holds that connection open as a multiplexed tunnel
+(WebSocket + [yamux](https://github.com/hashicorp/yamux)).
+`opencode-proxy --remote` sits on the AWS host, takes requests from your
+browser, and forwards each one down the tunnel to `opencode web` on the Mac.
+
+Every link is mutual TLS against a private CA you control — the browser must
+present a device certificate, and the Mac must present a tunnel certificate,
+before either can do anything. opencode's own password
+(`OPENCODE_SERVER_PASSWORD`) is passed straight through end to end; the AWS
+host never sees or stores it.
+
+```
+ phone (cellular) --mTLS--> AWS EC2 (--remote) <--mTLS-- MacBook (--local) --> opencode web
+```
+
+## 1. Build the binary
+
+```sh
+go build -o opencode-proxy ./cmd/opencode-proxy
+```
+
+Cross-compile for the Mac and for the EC2 host:
+
+```sh
+GOOS=darwin GOARCH=arm64 go build -o opencode-proxy-darwin-arm64 ./cmd/opencode-proxy
+GOOS=linux  GOARCH=arm64 go build -o opencode-proxy-linux-arm64  ./cmd/opencode-proxy
+```
+
+The CloudFormation stack's UserData fetches
+`opencode-proxy-linux-<arch>` from this repo's GitHub Releases; publish a
+release with those binaries attached before first deploy, or edit the
+`curl` line in `cloudformation/stack.yaml` to point at wherever you host it.
+
+## 2. Issue certificates
+
+```sh
+./pki/init-ca.sh                                  # once — creates pki/out/ca.{key,crt}
+./pki/issue-server.sh code.example.com <eip>       # AWS host's TLS identity (run after step 3, once you have the EIP)
+./pki/issue-tunnel.sh                              # the Mac's identity when dialing the tunnel
+./pki/issue-client.sh phone                        # a browser device; repeat per device
+```
+
+`issue-client.sh` also emits `pki/out/phone.mobileconfig` — an Apple
+configuration profile bundling CA trust and the device identity in one
+install, and `phone.p12` for manual import elsewhere. See `pki/renew.sh` —
+leaf certs are valid 90 days.
+
+**Keep `pki/out/ca.key` off any machine you don't fully trust.** It's the
+root of everything reachable through the tunnel.
+
+## 3. Deploy the AWS host
+
+Requires the AWS CLI configured with credentials, and an EC2 key pair for
+emergency SSH access.
+
+```sh
+./pki/issue-server.sh code.example.com                       # before you have an EIP, SANs can be added later — see below
+./cloudformation/deploy.sh opencode-proxy code.example.com my-ec2-key <your-home-ip>/32
+```
+
+`deploy.sh` prints the stack outputs, including the **Elastic IP**. Two
+things then need that IP:
+
+1. Re-issue the server cert with the IP as an extra SAN if you didn't
+   already know it: `./pki/issue-server.sh code.example.com <eip>`
+2. Point `code.example.com`'s A record at it in Namecheap (Domain List →
+   Manage → Advanced DNS → Add A Record).
+
+Then push the (possibly re-issued) cert material to SSM and let the
+instance pick it up:
+
+```sh
+./cloudformation/upload-certs.sh
+```
+
+If you re-issued the cert after the instance already booted, SSH in
+(`AdminCidr`-restricted) and re-run the fetch + `systemctl restart
+opencode-proxy`, or just terminate the instance — the Elastic IP re-attaches
+to whatever CloudFormation replaces it with next `deploy.sh` run.
+
+## 4. Run `opencode web` and the local proxy on the Mac
+
+```sh
+OPENCODE_SERVER_PASSWORD=<your-password> opencode web --port 4096
+```
+
+Install the local proxy as a launchd agent so it survives reboots and
+reconnects after sleep:
+
+```sh
+sudo mkdir -p /usr/local/etc/opencode-proxy
+sudo cp pki/out/ca.crt pki/out/tunnel.{crt,key} /usr/local/etc/opencode-proxy/
+cp opencode-proxy-darwin-arm64 /usr/local/bin/opencode-proxy
+cp launchd/ai.opencode.proxy.plist ~/Library/LaunchAgents/
+# edit ~/Library/LaunchAgents/ai.opencode.proxy.plist: set --remote-url to your real domain
+launchctl load ~/Library/LaunchAgents/ai.opencode.proxy.plist
+```
+
+Check `/tmp/opencode-proxy.log` if the tunnel doesn't come up.
+
+## 5. Connect from your phone
+
+1. AirDrop (or otherwise transfer) `pki/out/phone.mobileconfig` to the
+   phone and open it.
+2. Settings → General → VPN & Device Management → install the profile.
+3. Settings → General → About → Certificate Trust Settings → enable full
+   trust for the "opencode-proxy CA" root.
+4. **Delete the `.mobileconfig` file** afterward — it carries the device's
+   private key and p12 password in plaintext.
+5. On cellular, open `https://code.example.com`. Safari will prompt to pick
+   a client certificate — choose the one you just installed — then present
+   opencode's own login (the `OPENCODE_SERVER_PASSWORD` from step 4).
+
+## Verifying it end-to-end
+
+- `go test ./...` — unit tests plus a loopback integration test covering
+  request/response round-trips, `Authorization` header passthrough,
+  incremental SSE delivery (proves streaming isn't buffered), rejection of
+  connections without a valid client cert, and the 503 returned when no
+  tunnel is connected.
+- Manually: with Wi-Fi off, confirm a chat response in the browser renders
+  token-by-token rather than appearing all at once — that's the SSE path
+  actually streaming end to end.
+- Failure drills worth trying once: put the Mac to sleep and wake it (the
+  tunnel should reconnect within ~30s); kill `opencode-proxy --local`
+  (launchd should restart it); reboot the EC2 instance (systemd should bring
+  `--remote` back up and the Mac should reconnect on its own).
+
+## Renewing certificates
+
+```sh
+./pki/renew.sh          # lists anything expiring within 14 days
+```
+
+Re-run the matching `issue-*.sh` script, then redeploy that cert to wherever
+it lives (SSM + instance restart for the server cert; scp + launchd restart
+for the tunnel cert; reinstall the `.mobileconfig` for a device cert).
+
+## Out of scope
+
+Certificate revocation (CRL/OCSP) isn't implemented — a compromised device
+cert must be handled by re-issuing the CA and every other cert. There's no
+rate limiting or WAF in front of the remote host beyond the mTLS gate, and
+this only supports one home opencode instance per remote host.

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps `opencode-proxy --local` running and reconnecting across crashes,
+  network drops, and Mac sleep/wake. Install with:
+
+    cp launchd/ai.opencode.proxy.plist ~/Library/LaunchAgents/
+    # edit the paths below (ProgramArguments, StandardOutPath) for your machine first
+    launchctl load ~/Library/LaunchAgents/ai.opencode.proxy.plist
+
+  Logs land at /tmp/opencode-proxy.log; check there first if the tunnel
+  doesn't come up. `launchctl unload ...` to stop.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.opencode.proxy</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/opencode-proxy</string>
+    <string>--local</string>
+    <string>--remote-url</string>
+    <string>wss://code.example.com/_tunnel</string>
+    <string>--opencode-url</string>
+    <string>http://127.0.0.1:4096</string>
+    <string>--ca</string>
+    <string>/usr/local/etc/opencode-proxy/ca.crt</string>
+    <string>--cert</string>
+    <string>/usr/local/etc/opencode-proxy/tunnel.crt</string>
+    <string>--key</string>
+    <string>/usr/local/etc/opencode-proxy/tunnel.key</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/opencode-proxy.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/opencode-proxy.log</string>
+
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+</dict>
+</plist>
