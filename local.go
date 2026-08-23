@@ -24,12 +24,13 @@ type LocalOptions struct {
 }
 
 type LocalClient struct {
-	opts    LocalOptions
-	log     *log.Logger
-	proxy   *httputil.ReverseProxy
-	dialers *TunnelDialerFactory
-	servers *LocalServerFactory
-	backoff *Backoff
+	opts         LocalOptions
+	log          *log.Logger
+	proxy        *httputil.ReverseProxy
+	dialers      *TunnelDialerFactory
+	servers      *LocalServerFactory
+	yamuxConfigs *YamuxConfigFactory
+	backoff      *Backoff
 }
 
 // LocalServerFactory builds a fresh http.Server for each reconnect: Run
@@ -75,22 +76,24 @@ func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, e
 	return proxy, nil
 }
 
-// NewLocalClient takes proxy, dialers, and servers rather than constructing
-// them itself: proxy is shared with the LocalServerFactory main builds
-// around it, and dialers/servers are factories, which are only ever
-// constructed in main.
-func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers *TunnelDialerFactory, servers *LocalServerFactory) *LocalClient {
+// NewLocalClient takes every dependency as a parameter rather than
+// constructing any of them itself: proxy is shared with the
+// LocalServerFactory main builds around it, dialers/servers/yamuxConfigs are
+// factories (only ever constructed in main), and backoff has no reason to
+// exist before main wires up the rest.
+func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers *TunnelDialerFactory, servers *LocalServerFactory, yamuxConfigs *YamuxConfigFactory, backoff *Backoff) *LocalClient {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
 	}
 	return &LocalClient{
-		opts:    opts,
-		log:     l,
-		proxy:   proxy,
-		dialers: dialers,
-		servers: servers,
-		backoff: NewBackoff(),
+		opts:         opts,
+		log:          l,
+		proxy:        proxy,
+		dialers:      dialers,
+		servers:      servers,
+		yamuxConfigs: yamuxConfigs,
+		backoff:      backoff,
 	}
 }
 
@@ -100,7 +103,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialers)
+		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialers, c.yamuxConfigs)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !sleepCtx(ctx, b.Next()) {

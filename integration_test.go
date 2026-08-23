@@ -90,7 +90,13 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	remoteAddr := ln.Addr().String()
 	ln.Close() // RemoteServer binds its own listener via ListenAndServeTLS
 
-	srv := NewRemoteServer(RemoteOptions{Addr: remoteAddr, TLS: remoteTLS})
+	remoteLog := log.Default()
+	reg := &SessionRegistry{}
+	remoteProxy := NewRemoteProxy(reg, remoteLog)
+	remoteYamuxConfigs := NewYamuxConfigFactory()
+	remoteHandler := RemoteWithVersionHeader(NewRemoteHandler(remoteProxy, reg, remoteYamuxConfigs, remoteLog))
+	httpSrv := NewRemoteHTTPServer(remoteAddr, remoteTLS, remoteHandler)
+	srv := NewRemoteServer(httpSrv)
 	ctx, cancel := context.WithCancel(context.Background())
 	go srv.ListenAndServe(ctx)
 	t.Cleanup(cancel)
@@ -108,11 +114,13 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	}
 	dialers := NewTunnelDialerFactory(localTLS)
 	servers := NewLocalServerFactory(LocalWithVersionHeader(proxy))
+	yamuxConfigs := NewYamuxConfigFactory()
+	backoff := NewBackoff()
 	client := NewLocalClient(LocalOptions{
 		RemoteURL:   "wss://" + remoteAddr + "/_tunnel",
 		OpencodeURL: "http://" + oc.addr,
 		TLS:         localTLS,
-	}, proxy, dialers, servers)
+	}, proxy, dialers, servers, yamuxConfigs, backoff)
 	lctx, lcancel := context.WithCancel(context.Background())
 	t.Cleanup(lcancel)
 	go client.Run(lctx)
@@ -263,10 +271,16 @@ func TestNoTunnelReturns503(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := NewRemoteServer(RemoteOptions{Addr: addr, TLS: &tls.Config{
+	tlsConf := &tls.Config{
 		Certificates: []tls.Certificate{serverCert}, ClientCAs: pool,
 		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12,
-	}})
+	}
+	l := log.Default()
+	reg := &SessionRegistry{}
+	proxy := NewRemoteProxy(reg, l)
+	yamuxConfigs := NewYamuxConfigFactory()
+	handler := RemoteWithVersionHeader(NewRemoteHandler(proxy, reg, yamuxConfigs, l))
+	srv := NewRemoteServer(NewRemoteHTTPServer(addr, tlsConf, handler))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go srv.ListenAndServe(ctx)
