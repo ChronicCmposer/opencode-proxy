@@ -3,6 +3,9 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +67,142 @@ func TestRequireOU(t *testing.T) {
 func TestRequireOUNilState(t *testing.T) {
 	if err := RequireOU(nil, OUDevice); err == nil {
 		t.Fatal("expected error for nil connection state")
+	}
+}
+
+func writePEM(t *testing.T, dir, name string, pem []byte) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, pem, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestServerAndClientConfig(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := writePEM(t, dir, "ca.crt", ca.CertPEM)
+
+	serverLeaf, err := ca.issue(testLeafOptions{
+		CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCertPath := writePEM(t, dir, "server.crt", serverLeaf.CertPEM)
+	serverKeyPath := writePEM(t, dir, "server.key", serverLeaf.KeyPEM)
+
+	serverConf, err := ServerConfig(caPath, serverCertPath, serverKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serverConf.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Errorf("ClientAuth = %v, want RequireAndVerifyClientCert", serverConf.ClientAuth)
+	}
+	if serverConf.ClientCAs == nil {
+		t.Error("ClientCAs not set")
+	}
+	if len(serverConf.Certificates) != 1 {
+		t.Errorf("Certificates = %d, want 1", len(serverConf.Certificates))
+	}
+
+	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home", OU: OUTunnel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
+	tunnelKeyPath := writePEM(t, dir, "tunnel.key", tunnelLeaf.KeyPEM)
+
+	clientConf, err := ClientConfig(caPath, tunnelCertPath, tunnelKeyPath, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clientConf.ServerName != "127.0.0.1" {
+		t.Errorf("ServerName = %q, want 127.0.0.1", clientConf.ServerName)
+	}
+	if clientConf.RootCAs == nil {
+		t.Error("RootCAs not set")
+	}
+	if len(clientConf.Certificates) != 1 {
+		t.Errorf("Certificates = %d, want 1", len(clientConf.Certificates))
+	}
+}
+
+func TestServerConfigBadCAPath(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := ServerConfig(filepath.Join(dir, "missing.crt"), "", ""); err == nil {
+		t.Fatal("expected error for a missing CA file")
+	}
+}
+
+func TestServerConfigMismatchedKeypairWrapsLabel(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := writePEM(t, dir, "ca.crt", ca.CertPEM)
+
+	leaf, err := ca.issue(testLeafOptions{CommonName: "x", OU: "server", IsServer: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherLeaf, err := ca.issue(testLeafOptions{CommonName: "y", OU: "server", IsServer: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := writePEM(t, dir, "server.crt", leaf.CertPEM)
+	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
+
+	_, err = ServerConfig(caPath, certPath, mismatchedKeyPath)
+	if err == nil {
+		t.Fatal("expected error for a mismatched cert/key pair")
+	}
+	if !strings.Contains(err.Error(), "server keypair") {
+		t.Errorf("error = %q, want it to mention %q", err.Error(), "server keypair")
+	}
+}
+
+func TestClientConfigMismatchedKeypairWrapsLabel(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := writePEM(t, dir, "ca.crt", ca.CertPEM)
+
+	leaf, err := ca.issue(testLeafOptions{CommonName: "x", OU: OUTunnel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherLeaf, err := ca.issue(testLeafOptions{CommonName: "y", OU: OUTunnel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := writePEM(t, dir, "tunnel.crt", leaf.CertPEM)
+	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
+
+	_, err = ClientConfig(caPath, certPath, mismatchedKeyPath, "")
+	if err == nil {
+		t.Fatal("expected error for a mismatched cert/key pair")
+	}
+	if !strings.Contains(err.Error(), "client keypair") {
+		t.Errorf("error = %q, want it to mention %q", err.Error(), "client keypair")
+	}
+}
+
+func TestLoadCAPoolErrors(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadCAPool(filepath.Join(dir, "missing.crt")); err == nil {
+		t.Fatal("expected error for a missing CA file")
+	}
+
+	garbage := writePEM(t, dir, "garbage.crt", []byte("not a certificate"))
+	if _, err := LoadCAPool(garbage); err == nil {
+		t.Fatal("expected error for a CA file with no certificates")
 	}
 }
