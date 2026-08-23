@@ -22,23 +22,62 @@ host never sees or stores it.
  phone (cellular) --mTLS--> AWS EC2 (--remote) <--mTLS-- MacBook (--local) --> opencode web
 ```
 
-## 1. Build the binary
+## 1. Build
+
+Two separate artifacts come out of this repo:
+
+- **The Mac side** (`--local`) is a plain Go binary — no container involved,
+  since it runs directly on your MacBook under launchd.
+- **The AWS side** (`--remote`) ships as an OCI container image, since the
+  EC2 host runs it under containerd rather than as a bare process.
 
 ```sh
-go build -o opencode-proxy ./cmd/opencode-proxy
+make build   # native opencode-proxy binary, for local dev/testing
+make test    # unit + loopback integration tests
 ```
 
-Cross-compile for the Mac and for the EC2 host:
+Cross-compile the Mac binary directly with `go build` (no container needed
+for this side):
 
 ```sh
 GOOS=darwin GOARCH=arm64 go build -o opencode-proxy-darwin-arm64 ./cmd/opencode-proxy
-GOOS=linux  GOARCH=arm64 go build -o opencode-proxy-linux-arm64  ./cmd/opencode-proxy
 ```
 
-The CloudFormation stack's UserData fetches
-`opencode-proxy-linux-<arch>` from this repo's GitHub Releases; publish a
-release with those binaries attached before first deploy, or edit the
-`curl` line in `cloudformation/stack.yaml` to point at wherever you host it.
+### Building the remote container image
+
+Image builds go through **BuildKit's `buildctl`, talking to a standalone
+`buildkitd` running the containerd worker** — no Docker CLI or daemon
+anywhere in this path.
+
+**Setting up buildkitd** (once per build machine): install `buildkitd` and
+`buildctl` from the [BuildKit releases page](https://github.com/moby/buildkit/releases),
+then run the daemon with the containerd worker enabled (this is what "depend
+on buildkit and containerd rather than Docker" means in practice — BuildKit
+executes build steps through containerd, and Docker never enters the
+picture):
+
+```sh
+sudo containerd &                                  # if not already running
+sudo buildkitd --containerd-worker=true &           # or install both as systemd units
+```
+
+Then build:
+
+```sh
+make image   # writes opencode-proxy.tar (an OCI image archive, linux/arm64)
+```
+
+`make image` runs `buildctl build --frontend dockerfile.v0 ... --output
+type=oci,dest=opencode-proxy.tar` against `$BUILDKIT_HOST` (defaults to the
+standard `unix:///run/buildkit/buildkitd.sock`; override if your daemon
+listens elsewhere). The `Dockerfile` cross-compiles the Go binary for
+`linux/arm64` inside the build (Go's native cross-compiler, no QEMU needed)
+and copies just that static binary onto `FROM scratch` — the final image has
+no shell, no package manager, nothing but `/opencode-proxy`.
+
+Publish `opencode-proxy.tar` as a GitHub Release asset with exactly that
+name — the CloudFormation stack's `ImageTarURL` parameter defaults to
+`.../releases/latest/download/opencode-proxy.tar`.
 
 ## 2. Issue certificates
 
@@ -60,7 +99,14 @@ root of everything reachable through the tunnel.
 ## 3. Deploy the AWS host
 
 Requires the AWS CLI configured with credentials, and an EC2 key pair for
-emergency SSH access.
+emergency SSH access. The instance launches on the **latest Amazon Linux
+2023 arm64 AMI** (resolved fresh from an SSM public parameter on every
+deploy, never pinned) and defaults to **`t4g.nano`** — plenty for one home's
+tunnel plus occasional phone use; see the `InstanceType` parameter
+description in `cloudformation/stack.yaml` for the sizing rationale and when
+to bump it. UserData installs `containerd`, imports `opencode-proxy.tar`
+(published in step 1) with `ctr images import`, and runs it under a systemd
+unit wrapping `ctr run --net-host` — no Docker on the instance.
 
 ```sh
 ./pki/issue-server.sh code.example.com                       # before you have an EIP, SANs can be added later — see below
@@ -122,7 +168,7 @@ Check `/tmp/opencode-proxy.log` if the tunnel doesn't come up.
 
 ## Verifying it end-to-end
 
-- `go test ./...` — unit tests plus a loopback integration test covering
+- `make test` — unit tests plus a loopback integration test covering
   request/response round-trips, `Authorization` header passthrough,
   incremental SSE delivery (proves streaming isn't buffered), rejection of
   connections without a valid client cert, and the 503 returned when no

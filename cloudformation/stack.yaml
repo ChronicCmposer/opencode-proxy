@@ -1,18 +1,33 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  opencode-proxy remote host: a single small EC2 instance behind an Elastic
-  IP running the --remote half of the proxy on :443. mTLS is the only access
-  control (the security group leaves 443 open to the internet); SSH is
-  restricted to AdminCidr. Certificates are pulled from SSM Parameter Store
-  at boot rather than baked into the AMI or template, since CloudFormation
-  cannot author SecureString parameters itself — see README.md for the
-  upload step that must happen before this stack is deployed.
+  opencode-proxy remote host: a single small arm64 EC2 instance (latest
+  Amazon Linux 2023, resolved via SSM at launch) behind an Elastic IP,
+  running the --remote half of the proxy as an OCI container under
+  containerd — no Docker on the instance, just `ctr`. mTLS is the only
+  access control (the security group leaves 443 open to the internet); SSH
+  is restricted to AdminCidr. The container image is published as a
+  GitHub Release asset (opencode-proxy.tar, built by `make image` — see
+  README.md) and imported directly into containerd's content store.
+  Certificates are pulled from SSM Parameter Store at boot rather than
+  baked into the image or template, since CloudFormation cannot author
+  SecureString parameters itself — see README.md for the upload step that
+  must happen before this stack is deployed.
 
 Parameters:
   InstanceType:
     Type: String
     Default: t4g.nano
     AllowedValues: [t4g.nano, t4g.micro, t3.micro, t3.small]
+    Description: >
+      t4g.nano (2 vCPU burstable, 0.5GB RAM, ~$3/mo) is the default: this
+      host runs one static Go binary handling one home's tunnel and
+      occasional phone requests, well under a nano's burst credits and RAM.
+      containerd itself adds a modest fixed memory floor (~30-50MB) on top
+      of the proxy process, still comfortably inside 0.5GB. Bump to
+      t4g.micro (1GB) if you see OOM kills in `journalctl -u containerd` or
+      plan to add more concurrent devices/streams than "a phone or two."
+      t3.* variants exist only as an x86 fallback if arm64 capacity is ever
+      unavailable in your region.
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: EC2 key pair for emergency SSH access.
@@ -34,7 +49,20 @@ Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
-    Description: Resolved via SSM public parameter so no AMI ID is hardcoded per-region.
+    Description: >
+      Resolved via SSM public parameter at every deploy/update, so the
+      instance always launches on the latest AL2023 arm64 AMI rather than
+      one pinned at template-authoring time.
+  ImageTarURL:
+    Type: String
+    Default: https://github.com/ChronicCmposer/opencode-proxy/releases/latest/download/opencode-proxy.tar
+    Description: >
+      Where the instance fetches the --remote OCI image from. Produced by
+      `make image` and published as a GitHub Release asset.
+  ImageRef:
+    Type: String
+    Default: docker.io/library/opencode-proxy:latest
+    Description: Image reference embedded in opencode-proxy.tar by `make image` — must match Makefile's IMAGE_NAME.
 
 Resources:
   InstanceRole:
@@ -104,7 +132,8 @@ Resources:
           set -eux
           trap '/opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}' EXIT
 
-          dnf install -y awscli || yum install -y awscli
+          dnf install -y awscli containerd || yum install -y awscli containerd
+          systemctl enable --now containerd
 
           mkdir -p /etc/opencode-proxy
           for f in ca.crt server.crt server.key; do
@@ -115,27 +144,34 @@ Resources:
           chmod 600 /etc/opencode-proxy/server.key
           chmod 644 /etc/opencode-proxy/ca.crt /etc/opencode-proxy/server.crt
 
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then GOARCH=arm64; else GOARCH=amd64; fi
-          # The binary is expected to already be reachable at this URL (built
-          # and published by CI, or copied up manually before first boot —
-          # see README.md "Deploying the binary").
-          curl -fsSL -o /usr/local/bin/opencode-proxy \
-            "https://github.com/ChronicCmposer/opencode-proxy/releases/latest/download/opencode-proxy-linux-${!GOARCH}"
-          chmod +x /usr/local/bin/opencode-proxy
+          # Fetch the OCI image produced by `make image` (see README.md) and
+          # load it straight into containerd's local content store — no
+          # registry involved.
+          curl -fsSL -o /tmp/opencode-proxy.tar "${ImageTarURL}"
+          ctr images import /tmp/opencode-proxy.tar
+          rm -f /tmp/opencode-proxy.tar
 
-          cat > /etc/systemd/system/opencode-proxy.service <<'UNIT'
+          cat > /etc/systemd/system/opencode-proxy.service <<UNIT
           [Unit]
-          Description=opencode-proxy remote
-          After=network-online.target
+          Description=opencode-proxy remote (containerd)
+          After=network-online.target containerd.service
           Wants=network-online.target
+          Requires=containerd.service
 
           [Service]
-          ExecStart=/usr/local/bin/opencode-proxy --remote --addr :443 \
+          # ctr run keeps the earlier container/task names around after a
+          # stop or crash; clear them before each start so Restart=always
+          # doesn't fail with "already exists".
+          ExecStartPre=-/usr/bin/ctr task kill opencode-proxy
+          ExecStartPre=-/usr/bin/ctr task rm opencode-proxy
+          ExecStartPre=-/usr/bin/ctr container rm opencode-proxy
+          ExecStart=/usr/bin/ctr run --rm --net-host \
+            --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \
+            ${ImageRef} opencode-proxy \
+            --remote --addr :443 \
             --ca /etc/opencode-proxy/ca.crt \
             --cert /etc/opencode-proxy/server.crt \
             --key /etc/opencode-proxy/server.key
-          AmbientCapabilities=CAP_NET_BIND_SERVICE
           Restart=always
           RestartSec=2
 
