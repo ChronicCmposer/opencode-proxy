@@ -110,7 +110,8 @@ func run() error {
 			return err
 		}
 		dialer := NewTunnelDialer(tlsConf)
-		server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
+		handler := WithVersionHeader(LocalVersionHeader, Version, proxy)
+		server := NewLocalServer(handler)
 		client := NewLocalClient(LocalOptions{
 			RemoteURL: f.remoteURL,
 			Logger:    logger,
@@ -124,7 +125,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger))
+	handler := NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger)
+	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
 	srv := NewRemoteServer(f.addr, tlsConf, handler)
 	return srv.ListenAndServe(ctx)
 }
