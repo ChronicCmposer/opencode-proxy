@@ -88,11 +88,11 @@ func runLocal(ctx context.Context, certs CertPaths, remoteURL, serverName string
 		return err
 	}
 	dialer := NewTunnelDialer(tlsConf)
-	serverFactory := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
+	server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
 	client := NewLocalClient(LocalOptions{
 		RemoteURL: remoteURL,
 		Logger:    logger,
-	}, proxy, dialer, serverFactory, tunnelFactory, backoff)
+	}, proxy, dialer, server, tunnelFactory, backoff)
 	return client.Run(ctx)
 }
 

@@ -26,20 +26,22 @@ type LocalClient struct {
 	log           *log.Logger
 	proxy         *httputil.ReverseProxy
 	dialer        *http.Client
-	serverFactory LocalServerFactory
+	server        *http.Server
 	tunnelFactory *TunnelFactory
 	backoff       *Backoff
 }
 
-// LocalServerFactory builds a fresh http.Server for each reconnect: Run
-// serves a new tunnel session every time, and http.Server must not be reused
-// across sessions once it has been Serve'd and stopped.
-type LocalServerFactory func() *http.Server
-
-func NewLocalServerFactory(handler http.Handler) LocalServerFactory {
-	return func() *http.Server {
-		return &http.Server{Handler: handler}
-	}
+// NewLocalServer builds the http.Server LocalClient.Run serves each
+// tunnel session over.
+//
+// A single instance is safe to share across every reconnect: net/http
+// only leaves a Server unusable for a future Serve call once Shutdown or
+// Close has actually been invoked on it (permanently, via an internal
+// flag nothing else ever sets). Run never calls either — it ends each
+// session by closing the yamux session (this Serve call's Listener),
+// which just makes Serve return; the Server itself is untouched.
+func NewLocalServer(handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler}
 }
 
 // NewLocalProxy builds the reverse proxy to opencode's local HTTP server.
@@ -65,7 +67,7 @@ func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, e
 	}, nil
 }
 
-func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialer *http.Client, serverFactory LocalServerFactory, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
+func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialer *http.Client, server *http.Server, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
@@ -75,7 +77,7 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialer *htt
 		log:           l,
 		proxy:         proxy,
 		dialer:        dialer,
-		serverFactory: serverFactory,
+		server:        server,
 		tunnelFactory: tunnelFactory,
 		backoff:       backoff,
 	}
@@ -98,8 +100,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
 		c.backoff.Reset()
 
-		srv := c.serverFactory()
-		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
+		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return c.server.Serve(sess) })
 		if cancelled {
 			break
 		}

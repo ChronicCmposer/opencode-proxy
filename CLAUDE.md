@@ -6,30 +6,31 @@ documentation for code that no longer matches.
 
 ## Factories over shared reuse
 
-Some objects are unsafe to reuse once "used up" — an `http.Server` after it
-has been `Serve`'d and shut down, a `yamux.Config` shared across sessions.
-Rather than constructing one instance and reusing it, these get a `Factory`
-type — a named `func() T` closure — that mints a fresh instance on demand:
+Some objects are unsafe to reuse once "used up" — a `yamux.Config` shared
+across sessions, for instance. Rather than constructing one instance and
+reusing it, these get a `Factory` type — a named `func() T` closure — that
+mints a fresh instance on demand:
 
-- `LocalServerFactory` (local.go) — fresh `http.Server` per tunnel session
 - `YamuxConfigFactory` (tunnel.go) — fresh `yamux.Config` per session
 
 Add a doc comment on the type explaining *why* reuse is unsafe, not just that
-a factory exists — see local.go's `LocalServerFactory` for the pattern.
+a factory exists — see `YamuxConfigFactory`'s doc comment for the pattern.
 
 **Name the variable, field, or parameter holding a factory `xxxFactory`**,
-echoing its type: `serverFactory LocalServerFactory`, `yamuxConfigFactory
-YamuxConfigFactory`. At a call site you should be able to tell a factory from
-the thing it mints without looking up the declaration — `serverFactory()`
-reads as "make a server", a bare `servers()` does not. This applies to
-`LocalClient`'s struct fields just as much as to locals.
+echoing its type: `yamuxConfigFactory YamuxConfigFactory`. At a call site you
+should be able to tell a factory from the thing it mints without looking up
+the declaration — `yamuxConfigFactory()` reads as "make a yamux config", a
+bare `yamuxConfigs()` does not.
 
-**Not every `http.Client` needs this.** `NewTunnelDialer` (tunnel.go) builds
-one plain `*http.Client`, shared for the process's whole lifetime — no
-factory. The general risk (a client reused past a broken `Transport`) is
-real, but check whether it actually applies before reaching for this
-pattern: `TunnelFactory.DialTunnel`'s doc comment has the reasoning for why
-this particular client is safe to share across every dial attempt.
+**Don't reach for this reflexively — check whether reuse is actually unsafe
+first.** `TunnelDialerFactory` and `LocalServerFactory` both used to exist
+here, minting a fresh `http.Client`/`http.Server` per attempt on the
+assumption that reuse was unsafe the same way `yamux.Config` is. Both
+assumptions turned out to be wrong once actually checked: `NewTunnelDialer`
+(tunnel.go) and `NewLocalServer` (local.go) each build one instance now,
+shared for the process's whole lifetime. Their doc comments — and
+`TunnelFactory.DialTunnel`'s — carry the reasoning for why each one's reuse
+is safe; don't restore either factory without redoing that kind of check.
 
 `TunnelFactory` (tunnel.go) is a related but distinct shape: dialing and
 accepting a tunnel session are different operations, not two ways of minting
@@ -47,8 +48,8 @@ nowhere else, at two levels:
   each half would otherwise construct for itself — the logger, the reverse
   proxy, the backoff, the session registry.
 - `runLocal`/`runRemote` take those as parameters and build only what is
-  specific to their half: the TLS config, the factories, the handler, the
-  server.
+  specific to their half: the TLS config, and whatever else differs between
+  the two (the dialer and server for local; the handler for remote).
 
 Constructors take every dependency as a parameter rather than constructing any
 of them internally, so nothing is patched onto a struct after the fact. The
