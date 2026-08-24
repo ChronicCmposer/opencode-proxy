@@ -37,15 +37,12 @@ through each call separately.
 
 ## Dependency injection: manual constructor injection, no framework
 
-There is no DI container or service locator. Wiring happens in `main.go` and
-nowhere else, at two levels:
-
-- `run()` parses the flags, loads the `Config`, and builds the collaborators
-  each half would otherwise construct for itself — the logger, the reverse
-  proxy, the backoff, the session registry.
-- `runLocal`/`runRemote` take those as parameters and build only what is
-  specific to their half: the TLS config, and whatever else differs between
-  the two (the dialer and server for local; the handler for remote).
+There is no DI container or service locator. All wiring happens in one
+place: `run()` (main.go) parses the flags, loads the `Config`, and builds
+every collaborator each half needs — the logger, the reverse proxy, the
+backoff, the session registry, the TLS config, and whatever else differs
+between local and remote — before branching on `f.isLocal` to run whichever
+half's client/server loop.
 
 Constructors take every dependency as a parameter rather than constructing any
 of them internally, so nothing is patched onto a struct after the fact. The
@@ -58,7 +55,7 @@ streamOpenTimeout)` take theirs from the `Config` that `run()` loaded
 (config.go), so the values live in one place and `--config` can override them.
 
 When adding a new component, follow this shape: give it a constructor that
-takes its dependencies as arguments, and wire it up in `main.go` — don't
+takes its dependencies as arguments, and wire it up in `run()` — don't
 reach for a package-level singleton or build dependencies inside the
 component itself.
 

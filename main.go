@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"os/signal"
 	"syscall"
@@ -106,35 +105,27 @@ func run() error {
 			return err
 		}
 		backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
-		return runLocal(ctx, certs, f.remoteURL, f.serverName, proxy, tunnelFactory, backoff, logger)
+		tlsConf, err := NewClientTLSConfig(certs, f.serverName)
+		if err != nil {
+			return err
+		}
+		dialer := NewTunnelDialer(tlsConf)
+		server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
+		client := NewLocalClient(LocalOptions{
+			RemoteURL: f.remoteURL,
+			Logger:    logger,
+		}, proxy, dialer, server, tunnelFactory, backoff)
+		return client.Run(ctx)
 	}
 
 	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, logger)
-	return runRemote(ctx, cfg.TunnelPath, certs, f.addr, reg, proxy, tunnelFactory, logger)
-}
-
-func runLocal(ctx context.Context, certs CertPaths, remoteURL, serverName string, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, backoff *Backoff, logger *log.Logger) error {
-	tlsConf, err := NewClientTLSConfig(certs, serverName)
-	if err != nil {
-		return err
-	}
-	dialer := NewTunnelDialer(tlsConf)
-	server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
-	client := NewLocalClient(LocalOptions{
-		RemoteURL: remoteURL,
-		Logger:    logger,
-	}, proxy, dialer, server, tunnelFactory, backoff)
-	return client.Run(ctx)
-}
-
-func runRemote(ctx context.Context, tunnelPath string, certs CertPaths, addr string, reg *SessionRegistry, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, logger *log.Logger) error {
 	tlsConf, err := NewServerTLSConfig(certs)
 	if err != nil {
 		return err
 	}
-	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, tunnelPath, logger))
-	srv := NewRemoteServer(addr, tlsConf, handler)
+	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger))
+	srv := NewRemoteServer(f.addr, tlsConf, handler)
 	return srv.ListenAndServe(ctx)
 }
 
