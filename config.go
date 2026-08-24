@@ -76,24 +76,26 @@ type configJSON struct {
 	TunnelPath        *string `json:"tunnel-path"`
 }
 
-// durationField names one of Config's time.Duration fields and points at it,
-// so UnmarshalJSON and validate can share a single field list instead of each
-// keeping their own — the way they used to, which let a field added to one
-// but not the other fail silently rather than loudly.
+// durationField pairs one of Config's time.Duration fields with its JSON
+// source (nil when validate builds the list, since validate has no raw JSON
+// to read from). Keeping name, text and dst together in one row — rather
+// than in separate lists UnmarshalJSON and validate each had to keep in sync
+// by hand, or matched positionally across parallel slices — makes it
+// impossible for a field to end up validated against, or unmarshalled into,
+// the wrong destination.
 type durationField struct {
 	name string
+	text *string
 	dst  *time.Duration
 }
 
-// durationFields lists c's duration fields in the same order configJSON
-// declares their string counterparts, so UnmarshalJSON can zip the two
-// together by index.
-func (c *Config) durationFields() []durationField {
+// durationFields lists c's duration fields alongside their raw JSON source.
+func (c *Config) durationFields(raw configJSON) []durationField {
 	return []durationField{
-		{"backoff-min", &c.BackoffMin},
-		{"backoff-max", &c.BackoffMax},
-		{"keepalive-interval", &c.KeepAliveInterval},
-		{"stream-open-timeout", &c.StreamOpenTimeout},
+		{"backoff-min", raw.BackoffMin, &c.BackoffMin},
+		{"backoff-max", raw.BackoffMax, &c.BackoffMax},
+		{"keepalive-interval", raw.KeepAliveInterval, &c.KeepAliveInterval},
+		{"stream-open-timeout", raw.StreamOpenTimeout, &c.StreamOpenTimeout},
 	}
 }
 
@@ -108,13 +110,11 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 	if err := dec.Decode(&raw); err != nil {
 		return err
 	}
-	texts := []*string{raw.BackoffMin, raw.BackoffMax, raw.KeepAliveInterval, raw.StreamOpenTimeout}
-	for i, f := range c.durationFields() {
-		text := texts[i]
-		if text == nil {
+	for _, f := range c.durationFields(raw) {
+		if f.text == nil {
 			continue
 		}
-		d, err := time.ParseDuration(*text)
+		d, err := time.ParseDuration(*f.text)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f.name, err)
 		}
@@ -130,7 +130,7 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 // reads a non-positive timeout as "disabled", not "shorter", and an inverted
 // backoff range would cap every delay below the first attempt's.
 func (c Config) validate() error {
-	for _, f := range c.durationFields() {
+	for _, f := range c.durationFields(configJSON{}) {
 		if *f.dst <= 0 {
 			return fmt.Errorf("%s must be positive, got %s", f.name, *f.dst)
 		}

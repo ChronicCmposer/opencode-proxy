@@ -167,6 +167,30 @@ func waitOrCancel(ctx context.Context, done <-chan struct{}, onCancel func()) bo
 	}
 }
 
+// raceCtx runs work in a goroutine and returns as soon as either it finishes
+// or ctx is cancelled, whichever comes first. Unlike waitOrCancel, work has
+// no way to be aborted early (there's nothing to call an onCancel on): a
+// cancellation just stops raceCtx from waiting on it any longer, while the
+// goroutine itself runs to completion and its result is discarded.
+func raceCtx[T any](ctx context.Context, work func() (T, error)) (T, error) {
+	type result struct {
+		val T
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		val, err := work()
+		ch <- result{val, err}
+	}()
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case r := <-ch:
+		return r.val, r.err
+	}
+}
+
 // NewYamuxSession wraps conn (already an established websocket connection)
 // as a yamux session, closing conn on failure.
 func NewYamuxSession(conn net.Conn, cfg *yamux.Config, role YamuxRole) (*yamux.Session, error) {
