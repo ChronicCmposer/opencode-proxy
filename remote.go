@@ -63,8 +63,14 @@ func (r *SessionRegistry) Clear(sess *yamux.Session) {
 	r.mu.Unlock()
 }
 
-func NewRemoteReverseProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
+// NewRemoteReverseProxy splits tunnel upgrades on tunnelPath from ordinary
+// device requests, enforcing each side's required client-certificate role
+// before dispatch; non-tunnel requests are forwarded through the reverse
+// proxy it builds internally. ctx governs an accepted tunnel's lifetime: a
+// hijacked connection is invisible to http.Server.Shutdown, so without it
+// the session would only end when the process exits.
+func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, tunnelPath string, l *log.Logger) http.Handler {
+	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// opencode.tunnel is never resolved: DialContext below ignores
 			// the address and opens a yamux stream instead. ReverseProxy
@@ -91,14 +97,6 @@ func NewRemoteReverseProxy(reg *SessionRegistry, l *log.Logger) *httputil.Revers
 			http.Error(w, "no tunnel connected", http.StatusServiceUnavailable)
 		},
 	}
-}
-
-// NewRemoteHandler splits tunnel upgrades on tunnelPath from ordinary
-// device requests, enforcing each side's required client-certificate role
-// before dispatch. ctx governs an accepted tunnel's lifetime: a hijacked
-// connection is invisible to http.Server.Shutdown, so without it the
-// session would only end when the process exits.
-func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, tunnelFactory *TunnelFactory, tunnelPath string, l *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
 

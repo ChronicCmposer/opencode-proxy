@@ -120,12 +120,11 @@ func run() error {
 	}
 
 	reg := NewSessionRegistry()
-	proxy := NewRemoteReverseProxy(reg, logger)
 	tlsConf, err := NewServerTLSConfig(certs)
 	if err != nil {
 		return err
 	}
-	handler := NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger)
+	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, cfg.TunnelPath, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
 	srv := NewRemoteServer(f.addr, tlsConf, handler)
 	return srv.ListenAndServe(ctx)

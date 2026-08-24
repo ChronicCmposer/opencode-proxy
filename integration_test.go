@@ -29,7 +29,7 @@ type harness struct {
 }
 
 // startRemoteServer issues the remote's server certificate, wires it up via
-// the real NewServerTLSConfig/NewRemoteHandler production path (rather than
+// the real NewServerTLSConfig/NewRemoteReverseProxy production path (rather than
 // hand-building a *tls.Config that could silently drift from what production
 // actually does), and returns its listen address once it's accepting
 // connections. newHarness and TestNoTunnelReturns503 both need exactly this,
@@ -60,10 +60,9 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 	cfg := DefaultConfig()
 	remoteLog := log.Default()
 	reg := NewSessionRegistry()
-	remoteProxy := NewRemoteReverseProxy(reg, remoteLog)
 	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
-	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, remoteProxy, reg, remoteTunnelFactory, cfg.TunnelPath, remoteLog))
+	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, cfg.TunnelPath, remoteLog))
 	srv := NewRemoteServer(remoteAddr, remoteTLS, remoteHandler)
 	go srv.ListenAndServe(ctx)
 	t.Cleanup(cancel)
