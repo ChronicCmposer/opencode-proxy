@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"net/http/httputil"
 	"os"
 	"os/signal"
@@ -104,4 +105,16 @@ func runRemote(ctx context.Context, cfg Config, certs CertPaths, addr string, re
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)
 	return srv.ListenAndServe(ctx)
+}
+
+// WithVersionHeader sets header to version on every response. Pre-setting it
+// (rather than in httputil.ReverseProxy's ModifyResponse) covers every
+// response path uniformly, including 403/503 error paths: ReverseProxy only
+// adds backend headers via copyHeader, it never clears what's already on the
+// ResponseWriter.
+func WithVersionHeader(header, version string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(header, version)
+		next.ServeHTTP(w, r)
+	})
 }
