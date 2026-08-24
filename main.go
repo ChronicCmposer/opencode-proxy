@@ -111,7 +111,7 @@ func run() error {
 		}
 		dialer := NewTunnelDialer(tlsConf)
 		handler := WithVersionHeader(LocalVersionHeader, Version, proxy)
-		server := NewLocalServer(handler)
+		server := &http.Server{Handler: handler} // safe to reuse across reconnects — see NewLocalServer's doc comment
 		client := NewLocalClient(f.remoteURL, logger, dialer, server, tunnelFactory, backoff)
 		return client.Run(ctx)
 	}
