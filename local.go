@@ -25,7 +25,7 @@ type LocalClient struct {
 	opts          LocalOptions
 	log           *log.Logger
 	proxy         *httputil.ReverseProxy
-	dialerFactory TunnelDialerFactory
+	dialer        *http.Client
 	serverFactory LocalServerFactory
 	tunnelFactory *TunnelFactory
 	backoff       *Backoff
@@ -65,7 +65,7 @@ func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, e
 	}, nil
 }
 
-func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFactory TunnelDialerFactory, serverFactory LocalServerFactory, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
+func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialer *http.Client, serverFactory LocalServerFactory, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
@@ -74,7 +74,7 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFacto
 		opts:          opts,
 		log:           l,
 		proxy:         proxy,
-		dialerFactory: dialerFactory,
+		dialer:        dialer,
 		serverFactory: serverFactory,
 		tunnelFactory: tunnelFactory,
 		backoff:       backoff,
@@ -87,10 +87,7 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFacto
 // clean SIGTERM.
 func (c *LocalClient) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
-		// Minted fresh each attempt: a client whose Transport broke on a
-		// prior failed or dropped connection must not be reused.
-		dialer := c.dialerFactory()
-		sess, err := c.tunnelFactory.DialTunnel(ctx, c.opts.RemoteURL, dialer)
+		sess, err := c.tunnelFactory.DialTunnel(ctx, c.opts.RemoteURL, c.dialer)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !c.waitToRetry(ctx) {

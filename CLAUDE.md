@@ -7,12 +7,10 @@ documentation for code that no longer matches.
 ## Factories over shared reuse
 
 Some objects are unsafe to reuse once "used up" — an `http.Server` after it
-has been `Serve`'d and shut down, an `http.Client` after its `Transport` has
-broken, a `yamux.Config` shared across sessions. Rather than constructing one
-instance and reusing it, these get a `Factory` type — a named `func() T`
-closure — that mints a fresh instance on demand:
+has been `Serve`'d and shut down, a `yamux.Config` shared across sessions.
+Rather than constructing one instance and reusing it, these get a `Factory`
+type — a named `func() T` closure — that mints a fresh instance on demand:
 
-- `TunnelDialerFactory` (tunnel.go) — fresh `http.Client` per dial attempt
 - `LocalServerFactory` (local.go) — fresh `http.Server` per tunnel session
 - `YamuxConfigFactory` (tunnel.go) — fresh `yamux.Config` per session
 
@@ -20,12 +18,18 @@ Add a doc comment on the type explaining *why* reuse is unsafe, not just that
 a factory exists — see local.go's `LocalServerFactory` for the pattern.
 
 **Name the variable, field, or parameter holding a factory `xxxFactory`**,
-echoing its type: `dialerFactory TunnelDialerFactory`, `serverFactory
-LocalServerFactory`, `yamuxConfigFactory YamuxConfigFactory`. At a call site you
-should be able to tell a factory from the thing it mints without looking up the
-declaration — `serverFactory()` reads as "make a server", a bare `servers()`
-does not. This applies to `LocalClient`'s struct fields just as much as to
-locals.
+echoing its type: `serverFactory LocalServerFactory`, `yamuxConfigFactory
+YamuxConfigFactory`. At a call site you should be able to tell a factory from
+the thing it mints without looking up the declaration — `serverFactory()`
+reads as "make a server", a bare `servers()` does not. This applies to
+`LocalClient`'s struct fields just as much as to locals.
+
+**Not every `http.Client` needs this.** `NewTunnelDialer` (tunnel.go) builds
+one plain `*http.Client`, shared for the process's whole lifetime — no
+factory. The general risk (a client reused past a broken `Transport`) is
+real, but check whether it actually applies before reaching for this
+pattern: `TunnelFactory.DialTunnel`'s doc comment has the reasoning for why
+this particular client is safe to share across every dial attempt.
 
 `TunnelFactory` (tunnel.go) is a related but distinct shape: dialing and
 accepting a tunnel session are different operations, not two ways of minting

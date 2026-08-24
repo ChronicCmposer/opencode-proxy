@@ -32,16 +32,13 @@ func NewYamuxConfigFactory(keepAliveInterval, streamOpenTimeout time.Duration) Y
 	}
 }
 
-// TunnelDialerFactory builds a fresh http.Client for each dial attempt:
-// LocalClient.Run calls it before every DialTunnel across reconnects, since a
-// client with a broken Transport must not be reused.
-type TunnelDialerFactory func() *http.Client
-
-func NewTunnelDialerFactory(tlsConf *tls.Config) TunnelDialerFactory {
-	return func() *http.Client {
-		return &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConf},
-		}
+// NewTunnelDialer builds the http.Client DialTunnel uses to reach the
+// remote. Unlike LocalServerFactory/YamuxConfigFactory, this doesn't need a
+// Factory: see DialTunnel's doc comment for why a single instance is safe to
+// share across every dial attempt.
+func NewTunnelDialer(tlsConf *tls.Config) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsConf},
 	}
 }
 
@@ -59,9 +56,14 @@ func NewTunnelFactory(yamuxConfigFactory YamuxConfigFactory) *TunnelFactory {
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
 // dialer stays a parameter rather than a TunnelFactory field: only the dial
 // side ever needs one, and storing it here would leave the accept side
-// holding a meaningless nil field. Pass a freshly minted dialer each call:
-// unlike a factory parameter, a plain *http.Client doesn't stop a caller from
-// reusing one whose Transport already broke.
+// holding a meaningless nil field.
+//
+// dialer is safe to share across repeated calls, unlike most http.Clients
+// reused past a broken Transport: websocket.Dial below only ever calls
+// dialer.Do once, relying on net/http's built-in 101 Switching Protocols
+// handling — the upgraded connection comes back via the response body and is
+// dropped from the Transport's own pool, so neither a failed nor a
+// successful dial leaves it broken for the next attempt.
 func (f *TunnelFactory) DialTunnel(ctx context.Context, remoteURL string, dialer *http.Client) (*yamux.Session, error) {
 	c, _, err := websocket.Dial(ctx, remoteURL, &websocket.DialOptions{
 		HTTPClient: dialer,
