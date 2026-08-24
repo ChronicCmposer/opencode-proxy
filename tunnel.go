@@ -64,7 +64,7 @@ func DialTunnel(ctx context.Context, remoteURL string, dialers *TunnelDialerFact
 		return nil, fmt.Errorf("dial tunnel: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), "client")
+	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), yamuxRoleClient)
 }
 
 // AcceptTunnel assumes the caller has already verified the peer's client
@@ -75,23 +75,60 @@ func AcceptTunnel(w http.ResponseWriter, r *http.Request, yamuxConfigs *YamuxCon
 		return nil, fmt.Errorf("accept tunnel upgrade: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), "server")
+	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), yamuxRoleServer)
+}
+
+// yamuxRole selects yamux.Client vs yamux.Server in newYamuxSession. Using an
+// enum instead of a raw string rules out an unrecognized-role case at
+// compile time, since the only two callers are DialTunnel and AcceptTunnel
+// above.
+type yamuxRole int
+
+const (
+	yamuxRoleClient yamuxRole = iota
+	yamuxRoleServer
+)
+
+func (r yamuxRole) String() string {
+	if r == yamuxRoleServer {
+		return "server"
+	}
+	return "client"
+}
+
+// runTunnelSession runs run (if non-nil) on sess in a goroutine and waits for
+// it to finish or ctx to be cancelled first, closing sess either way; if run
+// is nil it just waits for sess to close on its own (the accept side has
+// nothing to drive — the tunnel client is what's serving). This is the
+// cancel-or-finish shutdown dance shared by LocalClient.Run (which serves an
+// http.Server over sess) and acceptTunnel (which only waits on it), so both
+// ends handle ctx cancellation identically. cancelled reports whether ctx
+// cancellation is why it returned; err is run's result, or nil when run is
+// nil or cancelled is true.
+func runTunnelSession(ctx context.Context, sess *yamux.Session, run func() error) (cancelled bool, err error) {
+	done := sess.CloseChan()
+	if run != nil {
+		ch := make(chan struct{})
+		go func() { err = run(); close(ch) }()
+		done = ch
+	}
+	cancelled = waitOrCancel(ctx, done, func() { sess.Close() })
+	sess.Close()
+	if cancelled {
+		return true, nil
+	}
+	return false, err
 }
 
 // newYamuxSession wraps conn (already an established websocket connection)
-// as a yamux session, closing conn on failure. role selects yamux.Client vs
-// yamux.Server ("client"/"server") and labels the wrapped error message.
-func newYamuxSession(conn net.Conn, cfg *yamux.Config, role string) (*yamux.Session, error) {
+// as a yamux session, closing conn on failure.
+func newYamuxSession(conn net.Conn, cfg *yamux.Config, role yamuxRole) (*yamux.Session, error) {
 	var sess *yamux.Session
 	var err error
-	switch role {
-	case "client":
-		sess, err = yamux.Client(conn, cfg)
-	case "server":
+	if role == yamuxRoleServer {
 		sess, err = yamux.Server(conn, cfg)
-	default:
-		conn.Close()
-		return nil, fmt.Errorf("start yamux session: unknown role %q", role)
+	} else {
+		sess, err = yamux.Client(conn, cfg)
 	}
 	if err != nil {
 		conn.Close()

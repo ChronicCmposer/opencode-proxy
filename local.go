@@ -112,14 +112,10 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		b.Reset()
 
 		srv := c.servers.CreateServer()
-		var serveErr error
-		done := make(chan struct{})
-		go func() { serveErr = srv.Serve(sess); close(done) }()
-
-		if waitOrCancel(ctx, done, func() { sess.Close() }) {
+		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
+		if cancelled {
 			return ctx.Err()
 		}
-		sess.Close()
 		if !errors.Is(serveErr, context.Canceled) {
 			c.log.Printf("tunnel session ended: %v", serveErr)
 		}

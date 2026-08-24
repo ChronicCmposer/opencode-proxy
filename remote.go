@@ -86,7 +86,7 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	}
 	l.Printf("tunnel connected from %s", PeerName(r.TLS))
 	reg.Set(sess)
-	if waitOrCancel(ctx, sess.CloseChan(), func() { sess.Close() }) {
+	if cancelled, _ := runTunnelSession(ctx, sess, nil); cancelled {
 		l.Printf("tunnel closed on shutdown")
 	} else {
 		l.Printf("tunnel disconnected")
