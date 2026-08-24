@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"testing"
 	"time"
 )
 
@@ -96,6 +97,27 @@ func (ca *testCA) issue(opts testLeafOptions) (*testLeaf, error) {
 		CertPEM: pemEncode("CERTIFICATE", der),
 		KeyPEM:  pemEncode("EC PRIVATE KEY", keyDER),
 	}, nil
+}
+
+// issueDevice and issueTunnel cover the common case across the test suite —
+// a leaf with only a CommonName and role OU — so callers don't have to
+// repeat the testLeafOptions literal and error check at every call site.
+func (ca *testCA) issueDevice(t *testing.T, cn string) *testLeaf {
+	t.Helper()
+	leaf, err := ca.issue(testLeafOptions{CommonName: cn, OU: OUDevice})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return leaf
+}
+
+func (ca *testCA) issueTunnel(t *testing.T, cn string) *testLeaf {
+	t.Helper()
+	leaf, err := ca.issue(testLeafOptions{CommonName: cn, OU: OUTunnel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return leaf
 }
 
 func (l *testLeaf) tlsCert() (tls.Certificate, error) {

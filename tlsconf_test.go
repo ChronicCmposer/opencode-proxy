@@ -27,14 +27,8 @@ func TestVerifyPeerRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home-mac", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deviceLeaf, err := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
-	if err != nil {
-		t.Fatal(err)
-	}
+	tunnelLeaf := ca.issueTunnel(t, "home-mac")
+	deviceLeaf := ca.issueDevice(t, "phone")
 	unrelated, err := ca.issue(testLeafOptions{CommonName: "nobody", OU: "something-else"})
 	if err != nil {
 		t.Fatal(err)
@@ -110,10 +104,7 @@ func TestServerAndClientConfig(t *testing.T) {
 		t.Errorf("Certificates = %d, want 1", len(serverConf.Certificates))
 	}
 
-	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
+	tunnelLeaf := ca.issueTunnel(t, "home")
 	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
 	tunnelKeyPath := writePEM(t, dir, "tunnel.key", tunnelLeaf.KeyPEM)
 
@@ -175,14 +166,8 @@ func TestClientConfigMismatchedKeypairWrapsLabel(t *testing.T) {
 	}
 	caPath := writePEM(t, dir, "ca.crt", ca.CertPEM)
 
-	leaf, err := ca.issue(testLeafOptions{CommonName: "x", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherLeaf, err := ca.issue(testLeafOptions{CommonName: "y", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
+	leaf := ca.issueTunnel(t, "x")
+	otherLeaf := ca.issueTunnel(t, "y")
 	certPath := writePEM(t, dir, "tunnel.crt", leaf.CertPEM)
 	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
 

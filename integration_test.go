@@ -28,20 +28,14 @@ type harness struct {
 	caPath     string
 }
 
-func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
+// startRemoteServer issues the remote's server certificate, wires it up via
+// the real NewServerTLSConfig/NewRemoteHandler production path (rather than
+// hand-building a *tls.Config that could silently drift from what production
+// actually does), and returns its listen address once it's accepting
+// connections. newHarness and TestNoTunnelReturns503 both need exactly this,
+// the latter without ever connecting a tunnel client to it.
+func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 	t.Helper()
-	dir := t.TempDir()
-
-	ca, err := newTestCA()
-	if err != nil {
-		t.Fatal(err)
-	}
-	caPath := filepath.Join(dir, "ca.crt")
-	if err := os.WriteFile(caPath, ca.CertPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	oc := startHTTPServer(t, opencodeHandler)
 
 	serverLeaf, err := ca.issue(testLeafOptions{
 		CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true,
@@ -49,40 +43,13 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverCert, err := serverLeaf.tlsCert()
+	serverCertPath := writePEM(t, dir, "server.crt", serverLeaf.CertPEM)
+	serverKeyPath := writePEM(t, dir, "server.key", serverLeaf.KeyPEM)
+	remoteTLS, err := NewServerTLSConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home-mac", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tunnelCert, err := tunnelLeaf.tlsCert()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	deviceLeaf, err := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deviceCert, err := deviceLeaf.tlsCert()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pool, err := LoadCAPool(caPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	remoteTLS := &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientCAs:    pool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS12,
-	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -103,12 +70,40 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	t.Cleanup(cancel)
 	waitForListener(t, remoteAddr)
 
-	localTLS := &tls.Config{
-		Certificates: []tls.Certificate{tunnelCert},
-		RootCAs:      pool,
-		ServerName:   "127.0.0.1",
-		MinVersion:   tls.VersionTLS12,
+	return remoteAddr
+}
+
+func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
+	t.Helper()
+	dir := t.TempDir()
+
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
 	}
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, ca.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oc := startHTTPServer(t, opencodeHandler)
+	remoteAddr := startRemoteServer(t, ca, caPath, dir)
+
+	tunnelLeaf := ca.issueTunnel(t, "home-mac")
+	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
+	tunnelKeyPath := writePEM(t, dir, "tunnel.key", tunnelLeaf.KeyPEM)
+	localTLS, err := NewClientTLSConfig(CertPaths{CA: caPath, Cert: tunnelCertPath, Key: tunnelKeyPath}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deviceLeaf := ca.issueDevice(t, "phone")
+	deviceCert, err := deviceLeaf.tlsCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
 	proxy, err := NewLocalProxy("http://"+oc.addr, log.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -258,33 +253,21 @@ func TestNoTunnelReturns503(t *testing.T) {
 		t.Fatal(err)
 	}
 	caPath := filepath.Join(dir, "ca.crt")
-	os.WriteFile(caPath, ca.CertPEM, 0o600)
-
-	serverLeaf, _ := ca.issue(testLeafOptions{CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true})
-	serverCert, _ := serverLeaf.tlsCert()
-	deviceLeaf, _ := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
-	deviceCert, _ := deviceLeaf.tlsCert()
-	pool, _ := LoadCAPool(caPath)
-
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := ln.Addr().String()
-	ln.Close()
-
-	tlsConf := &tls.Config{
-		Certificates: []tls.Certificate{serverCert}, ClientCAs: pool,
-		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12,
+	if err := os.WriteFile(caPath, ca.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	cfg := DefaultConfig()
-	l := log.Default()
-	reg := NewSessionRegistry()
-	proxy := NewRemoteProxy(reg, l)
-	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, l))
-	srv := NewRemoteServer(NewRemoteHTTPServer(addr, tlsConf, handler))
-	go srv.ListenAndServe(ctx)
-	waitForListener(t, addr)
+
+	addr := startRemoteServer(t, ca, caPath, dir)
+
+	pool, err := LoadCAPool(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceLeaf := ca.issueDevice(t, "phone")
+	deviceCert, err := deviceLeaf.tlsCert()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		Certificates: []tls.Certificate{deviceCert}, RootCAs: pool, ServerName: "127.0.0.1",
@@ -323,10 +306,7 @@ func TestCertFromDifferentCARejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherLeaf, err := otherCA.issue(testLeafOptions{CommonName: "impostor", OU: OUDevice})
-	if err != nil {
-		t.Fatal(err)
-	}
+	otherLeaf := otherCA.issueDevice(t, "impostor")
 	otherCert, err := otherLeaf.tlsCert()
 	if err != nil {
 		t.Fatal(err)

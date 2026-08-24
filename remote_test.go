@@ -25,14 +25,8 @@ func TestRemoteHandlerRejectsWrongOU(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deviceLeaf, err := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
+	deviceLeaf := ca.issueDevice(t, "phone")
+	tunnelLeaf := ca.issueTunnel(t, "home")
 
 	tests := []struct {
 		name string
@@ -71,10 +65,7 @@ func TestRemoteHandlerDeviceRequestNoTunnelReturns503(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deviceLeaf, err := ca.issue(testLeafOptions{CommonName: "phone", OU: OUDevice})
-	if err != nil {
-		t.Fatal(err)
-	}
+	deviceLeaf := ca.issueDevice(t, "phone")
 	handler, _ := newTestRemoteHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
 	req.TLS = stateFor(t, deviceLeaf)
@@ -90,10 +81,7 @@ func TestRemoteHandlerFailedTunnelAcceptLeavesRegistryEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tunnelLeaf, err := ca.issue(testLeafOptions{CommonName: "home", OU: OUTunnel})
-	if err != nil {
-		t.Fatal(err)
-	}
+	tunnelLeaf := ca.issueTunnel(t, "home")
 	handler, reg := newTestRemoteHandler(t)
 	// Not a real websocket upgrade, so AcceptTunnel fails fast — which is
 	// what exercises acceptTunnel's error path.
