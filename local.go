@@ -97,11 +97,18 @@ func (c *LocalClient) Run(ctx context.Context) error {
 			continue
 		}
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
-		c.backoff.Reset()
+		connectedAt := time.Now()
 
 		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return c.server.Serve(sess) })
 		if cancelled {
 			break
+		}
+		// Only counts as a real reconnect once the session outlasts the
+		// current backoff floor — otherwise a remote that accepts and
+		// immediately drops the tunnel resets to BackoffMin every cycle and
+		// gets hammered at that floor forever instead of ever backing off.
+		if time.Since(connectedAt) >= c.backoff.min {
+			c.backoff.Reset()
 		}
 		if !errors.Is(serveErr, http.ErrServerClosed) {
 			c.log.Printf("tunnel session ended: %v", serveErr)

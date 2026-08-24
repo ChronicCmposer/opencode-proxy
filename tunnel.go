@@ -88,8 +88,7 @@ func (f *TunnelFactory) DialTunnel(ctx context.Context, remoteURL string, dialer
 	if err != nil {
 		return nil, fmt.Errorf("dial tunnel: %w", err)
 	}
-	conn := websocket.NetConn(f.netConnCtx, c, websocket.MessageBinary)
-	return NewYamuxSession(conn, f.yamuxConfig, YamuxRoleClient)
+	return f.wrapSession(c, YamuxRoleClient)
 }
 
 // AcceptTunnel assumes the caller has already verified the peer's client
@@ -99,8 +98,12 @@ func (f *TunnelFactory) AcceptTunnel(w http.ResponseWriter, r *http.Request) (*y
 	if err != nil {
 		return nil, fmt.Errorf("accept tunnel upgrade: %w", err)
 	}
+	return f.wrapSession(c, YamuxRoleServer)
+}
+
+func (f *TunnelFactory) wrapSession(c *websocket.Conn, role YamuxRole) (*yamux.Session, error) {
 	conn := websocket.NetConn(f.netConnCtx, c, websocket.MessageBinary)
-	return NewYamuxSession(conn, f.yamuxConfig, YamuxRoleServer)
+	return NewYamuxSession(conn, f.yamuxConfig, role)
 }
 
 // YamuxRole selects yamux.Client vs yamux.Server in NewYamuxSession.
