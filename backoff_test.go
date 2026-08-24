@@ -44,3 +44,21 @@ func TestBackoffResetReturnsToFloor(t *testing.T) {
 		t.Fatalf("delay after reset = %v, want near floor %v", d, b.min)
 	}
 }
+
+func TestResetIfStableIgnoresFlappingSessions(t *testing.T) {
+	b := NewBackoff(testBackoffMin, testBackoffMax)
+	for i := 0; i < 5; i++ {
+		b.Next()
+	}
+	grownAttempt := b.attempt
+
+	b.ResetIfStable(testBackoffMin / 2)
+	if b.attempt != grownAttempt {
+		t.Fatalf("attempt = %d after a sub-floor uptime, want unchanged %d", b.attempt, grownAttempt)
+	}
+
+	b.ResetIfStable(testBackoffMin)
+	if b.attempt != 0 {
+		t.Fatalf("attempt = %d after an at-floor uptime, want reset to 0", b.attempt)
+	}
+}

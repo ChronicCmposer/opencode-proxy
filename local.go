@@ -103,13 +103,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		if cancelled {
 			break
 		}
-		// Only counts as a real reconnect once the session outlasts the
-		// current backoff floor — otherwise a remote that accepts and
-		// immediately drops the tunnel resets to BackoffMin every cycle and
-		// gets hammered at that floor forever instead of ever backing off.
-		if time.Since(connectedAt) >= c.backoff.min {
-			c.backoff.Reset()
-		}
+		c.backoff.ResetIfStable(time.Since(connectedAt))
 		if !errors.Is(serveErr, http.ErrServerClosed) {
 			c.log.Printf("tunnel session ended: %v", serveErr)
 		}
@@ -176,4 +170,14 @@ func (b *Backoff) nextBase() time.Duration {
 
 func (b *Backoff) Reset() {
 	b.attempt = 0
+}
+
+// ResetIfStable resets only if uptime reached the current floor — a session
+// that connects and drops faster than that would otherwise reset to
+// BackoffMin every cycle, so a persistently-broken remote gets hammered at
+// that floor forever instead of ever backing off.
+func (b *Backoff) ResetIfStable(uptime time.Duration) {
+	if uptime >= b.min {
+		b.Reset()
+	}
 }
