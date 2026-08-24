@@ -47,9 +47,9 @@ func TestSessionRegistryClearOnlyClobbersMatchingSession(t *testing.T) {
 	first := newTestSession(t)
 	reg.Set(first)
 	second := newTestSession(t)
-	reg.Set(second) // first is now stale, already replaced
+	reg.Set(second)
 
-	reg.Clear(first) // must not clobber the current session
+	reg.Clear(first)
 	if got := reg.Get(); got != second {
 		t.Fatalf("Clear() with a stale session clobbered the current one: got %v, want second", got)
 	}
