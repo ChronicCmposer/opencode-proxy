@@ -1,7 +1,5 @@
-// Unit tests for NewRemoteHandler's routing/authorization branches, built
-// directly from the DI seams (SessionRegistry, NewRemoteProxy,
-// NewRemoteHandler) instead of a live TLS/yamux tunnel like
-// integration_test.go — no real network or handshake needed to drive them.
+// Unit tests for NewRemoteHandler's routing and authorization branches,
+// driven without the live TLS/yamux tunnel integration_test.go sets up.
 package main
 
 import (
@@ -95,8 +93,8 @@ func TestRemoteHandlerFailedTunnelAcceptLeavesRegistryEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler, reg := newTestRemoteHandler(t)
-	// Not a real websocket upgrade request, so AcceptTunnel fails fast -
-	// this exercises acceptTunnel's error path without a live yamux session.
+	// Not a real websocket upgrade, so AcceptTunnel fails fast — which is
+	// what exercises acceptTunnel's error path.
 	req := httptest.NewRequest(http.MethodGet, TunnelPath, nil)
 	req.TLS = stateFor(t, tunnelLeaf)
 	rec := httptest.NewRecorder()

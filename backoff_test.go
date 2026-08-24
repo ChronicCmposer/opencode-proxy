@@ -4,7 +4,7 @@ import "testing"
 
 func TestBackoffGrowsAndCaps(t *testing.T) {
 	b := NewBackoff()
-	prevMin := b.min // 1s
+	prevMin := b.min
 	for i := 0; i < 10; i++ {
 		d := b.Next()
 		if d < prevMin {
