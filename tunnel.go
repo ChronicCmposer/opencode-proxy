@@ -16,25 +16,28 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-// YamuxConfigFactory builds a fresh yamux.Config for each tunnel session:
-// TunnelFactory's DialTunnel/AcceptTunnel are called repeatedly across
-// reconnects and newly accepted connections, and a yamux.Config must not be
-// shared across sessions.
-type YamuxConfigFactory func() *yamux.Config
-
-func NewYamuxConfigFactory(keepAliveInterval, streamOpenTimeout time.Duration) YamuxConfigFactory {
-	return func() *yamux.Config {
-		c := yamux.DefaultConfig()
-		c.EnableKeepAlive = true
-		c.KeepAliveInterval = keepAliveInterval
-		c.StreamOpenTimeout = streamOpenTimeout
-		return c
-	}
+// NewYamuxConfig builds the yamux.Config every tunnel session is
+// constructed from.
+//
+// A single instance is safe to share, even across sessions running fully
+// concurrently — which AcceptTunnel's callers can do, since net/http.Server
+// serves each accepted connection on its own goroutine and nothing here
+// serializes entry into AcceptTunnel. hashicorp/yamux's Session stores the
+// *Config pointer it's given and reads from it for its whole life (keepalive
+// interval, stream timeouts, window size, ...), from several goroutines, but
+// never writes back into it after construction — confirmed by reading the
+// package source. Concurrent reads of memory nothing ever writes to again
+// aren't a data race.
+func NewYamuxConfig(keepAliveInterval, streamOpenTimeout time.Duration) *yamux.Config {
+	c := yamux.DefaultConfig()
+	c.EnableKeepAlive = true
+	c.KeepAliveInterval = keepAliveInterval
+	c.StreamOpenTimeout = streamOpenTimeout
+	return c
 }
 
 // NewTunnelDialer builds the http.Client DialTunnel uses to reach the
-// remote. Unlike LocalServerFactory/YamuxConfigFactory, this doesn't need a
-// Factory: see DialTunnel's doc comment for why a single instance is safe to
+// remote: see DialTunnel's doc comment for why a single instance is safe to
 // share across every dial attempt.
 func NewTunnelDialer(tlsConf *tls.Config) *http.Client {
 	return &http.Client{
@@ -43,14 +46,14 @@ func NewTunnelDialer(tlsConf *tls.Config) *http.Client {
 }
 
 // TunnelFactory builds tunnel sessions for both halves of the proxy. It holds
-// the yamuxConfigFactory both DialTunnel and AcceptTunnel need, so callers
-// don't have to thread it through separately at every call site.
+// the yamuxConfig both DialTunnel and AcceptTunnel need, so callers don't
+// have to thread it through separately at every call site.
 type TunnelFactory struct {
-	yamuxConfigFactory YamuxConfigFactory
+	yamuxConfig *yamux.Config
 }
 
-func NewTunnelFactory(yamuxConfigFactory YamuxConfigFactory) *TunnelFactory {
-	return &TunnelFactory{yamuxConfigFactory: yamuxConfigFactory}
+func NewTunnelFactory(yamuxConfig *yamux.Config) *TunnelFactory {
+	return &TunnelFactory{yamuxConfig: yamuxConfig}
 }
 
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
@@ -72,7 +75,7 @@ func (f *TunnelFactory) DialTunnel(ctx context.Context, remoteURL string, dialer
 		return nil, fmt.Errorf("dial tunnel: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	return NewYamuxSession(conn, f.yamuxConfigFactory(), YamuxRoleClient)
+	return NewYamuxSession(conn, f.yamuxConfig, YamuxRoleClient)
 }
 
 // AcceptTunnel assumes the caller has already verified the peer's client
@@ -83,7 +86,7 @@ func (f *TunnelFactory) AcceptTunnel(w http.ResponseWriter, r *http.Request) (*y
 		return nil, fmt.Errorf("accept tunnel upgrade: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	return NewYamuxSession(conn, f.yamuxConfigFactory(), YamuxRoleServer)
+	return NewYamuxSession(conn, f.yamuxConfig, YamuxRoleServer)
 }
 
 // YamuxRole selects yamux.Client vs yamux.Server in NewYamuxSession.
