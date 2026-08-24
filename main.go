@@ -134,8 +134,7 @@ func runRemote(ctx context.Context, tunnelPath string, certs CertPaths, addr str
 		return err
 	}
 	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, tunnelPath, logger))
-	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
-	srv := NewRemoteServer(httpSrv)
+	srv := NewRemoteServer(addr, tlsConf, handler)
 	return srv.ListenAndServe(ctx)
 }
 

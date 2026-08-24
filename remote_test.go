@@ -94,7 +94,7 @@ func TestRemoteServerListenAndServePropagatesRealError(t *testing.T) {
 	defer ln.Close()
 	addr := ln.Addr().String() // held open, so binding it again below fails
 
-	srv := NewRemoteServer(NewRemoteHTTPServer(addr, &tls.Config{}, http.NotFoundHandler()))
+	srv := NewRemoteServer(addr, &tls.Config{}, http.NotFoundHandler())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -144,7 +144,7 @@ func TestRemoteServerListenAndServeReturnsNilOnGracefulShutdown(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	srv := NewRemoteServer(NewRemoteHTTPServer(addr, tlsConf, http.NotFoundHandler()))
+	srv := NewRemoteServer(addr, tlsConf, http.NotFoundHandler())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.ListenAndServe(ctx) }()

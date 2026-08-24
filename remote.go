@@ -137,20 +137,16 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	}
 }
 
-func NewRemoteHTTPServer(addr string, tlsConf *tls.Config, handler http.Handler) *http.Server {
-	return &http.Server{
-		Addr:      addr,
-		TLSConfig: tlsConf,
-		Handler:   handler,
-	}
-}
-
 type RemoteServer struct {
 	srv *http.Server
 }
 
-func NewRemoteServer(srv *http.Server) *RemoteServer {
-	return &RemoteServer{srv: srv}
+func NewRemoteServer(addr string, tlsConf *tls.Config, handler http.Handler) *RemoteServer {
+	return &RemoteServer{srv: &http.Server{
+		Addr:      addr,
+		TLSConfig: tlsConf,
+		Handler:   handler,
+	}}
 }
 
 func (s *RemoteServer) ListenAndServe(ctx context.Context) error {
