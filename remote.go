@@ -46,13 +46,11 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 	}
 }
 
-// NewRemoteHandler is the top-level request handler: it splits tunnel
-// upgrades on TunnelPath from ordinary device requests, enforcing each
-// side's required client-certificate role before dispatch. ctx governs the
-// server's lifetime: acceptTunnel closes an active tunnel session when ctx
-// is cancelled, mirroring LocalClient.Run's shutdown handling on the other
-// end — without it, a hijacked tunnel connection is invisible to
-// http.Server.Shutdown and would only end when the process itself exits.
+// NewRemoteHandler splits tunnel upgrades on TunnelPath from ordinary
+// device requests, enforcing each side's required client-certificate role
+// before dispatch. ctx governs an accepted tunnel's lifetime: a hijacked
+// connection is invisible to http.Server.Shutdown, so without it the
+// session would only end when the process exits.
 func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigs YamuxConfigFactory, l *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
@@ -92,9 +90,6 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	}
 }
 
-// NewRemoteHTTPServer wraps handler with the addr/TLS the public listener
-// serves on. Certificates are already embedded in tlsConf, so
-// ListenAndServe passes no cert/key file args.
 func NewRemoteHTTPServer(addr string, tlsConf *tls.Config, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:      addr,
@@ -103,8 +98,6 @@ func NewRemoteHTTPServer(addr string, tlsConf *tls.Config, handler http.Handler)
 	}
 }
 
-// RemoteServer runs the public mTLS listener main builds via
-// NewRemoteHTTPServer.
 type RemoteServer struct {
 	srv *http.Server
 }

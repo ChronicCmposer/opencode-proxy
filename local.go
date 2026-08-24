@@ -42,28 +42,19 @@ func NewLocalServerFactory(handler http.Handler) LocalServerFactory {
 }
 
 // NewLocalProxy builds the reverse proxy to opencode's local HTTP server.
-// It's split out of NewLocalClient so main can build it first, wrap it in
-// WithVersionHeader, and hand the result to NewLocalServerFactory —
-// letting every dependency reach NewLocalClient through its constructor
-// instead of being patched in afterward.
 func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(opencodeURL)
 	if err != nil {
 		return nil, err
 	}
 	return &httputil.ReverseProxy{
-		// Rewrite rather than the legacy Director, matching NewRemoteProxy:
-		// Director appends to whatever X-Forwarded-For the caller supplied,
-		// while Rewrite strips the client's forwarding headers first.
+		// Rewrite, not Director: it strips the client's X-Forwarded-*
+		// headers instead of appending to them.
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			// opencode is addressed by its own host rather than the public
-			// name the browser used; SetURL clears Out.Host, so set it back.
-			pr.Out.Host = target.Host
+			pr.Out.Host = target.Host // SetURL clears Out.Host
 		},
-		// An explicit zero-valued Transport rather than DefaultTransport: no
-		// env-var proxying and no idle-connection timeout on a link that only
-		// ever reaches the local opencode server.
+		// Not DefaultTransport: no env-var proxying, no idle timeout.
 		Transport:     &http.Transport{},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -73,11 +64,6 @@ func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, e
 	}, nil
 }
 
-// NewLocalClient takes every dependency as a parameter rather than
-// constructing any of them itself: proxy is shared with the
-// LocalServerFactory main builds around it, dialers/servers/yamuxConfigs are
-// factories (only ever constructed in main), and backoff has no reason to
-// exist before main wires up the rest.
 func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers TunnelDialerFactory, servers LocalServerFactory, yamuxConfigs YamuxConfigFactory, backoff *Backoff) *LocalClient {
 	l := opts.Logger
 	if l == nil {
@@ -95,10 +81,9 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers Tun
 }
 
 // Run dials the tunnel and serves it until ctx is cancelled, reconnecting
-// with backoff in between. Cancellation is the expected way to stop, so Run
-// returns nil for it rather than ctx.Err() — mirroring
-// RemoteServer.ListenAndServe swallowing http.ErrServerClosed, so both
-// halves exit 0 on a clean SIGTERM instead of disagreeing about it.
+// with backoff in between. Cancellation is the expected way to stop, so it
+// returns nil rather than ctx.Err(), leaving the process exit code 0 on a
+// clean SIGTERM.
 func (c *LocalClient) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialers, c.yamuxConfigs)
@@ -128,8 +113,6 @@ func (c *LocalClient) Run(ctx context.Context) error {
 	return nil
 }
 
-// waitToRetry sleeps for the next backoff interval, reporting false if ctx
-// is cancelled first.
 func (c *LocalClient) waitToRetry(ctx context.Context) bool {
 	return sleepCtx(ctx, c.backoff.Next())
 }

@@ -73,10 +73,7 @@ func AcceptTunnel(w http.ResponseWriter, r *http.Request, yamuxConfigs YamuxConf
 	return newYamuxSession(conn, yamuxConfigs(), yamuxRoleServer)
 }
 
-// yamuxRole selects yamux.Client vs yamux.Server in newYamuxSession. Using an
-// enum instead of a raw string rules out an unrecognized-role case at
-// compile time, since the only two callers are DialTunnel and AcceptTunnel
-// above.
+// yamuxRole selects yamux.Client vs yamux.Server in newYamuxSession.
 type yamuxRole int
 
 const (
@@ -91,12 +88,9 @@ func (r yamuxRole) String() string {
 	return "client"
 }
 
-// serveTunnelSession runs run on sess in a goroutine and waits for it to
-// finish or ctx to be cancelled first, closing sess either way. It's the
-// LocalClient.Run half of the shutdown dance shared with
-// awaitTunnelSession below, so both ends handle ctx cancellation
-// identically. cancelled reports whether ctx cancellation is why it
-// returned; err is run's result, and always nil when cancelled.
+// serveTunnelSession runs run on sess in a goroutine until it finishes or
+// ctx is cancelled, closing sess either way. err is run's result, and is
+// always nil when cancelled.
 func serveTunnelSession(ctx context.Context, sess *yamux.Session, run func() error) (cancelled bool, err error) {
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
@@ -110,20 +104,17 @@ func serveTunnelSession(ctx context.Context, sess *yamux.Session, run func() err
 }
 
 // awaitTunnelSession waits for sess to close on its own or for ctx to be
-// cancelled, closing sess either way, and reports whether cancellation is
-// why it returned. This is the accept side's half of the dance: it has
-// nothing to drive, since the tunnel client is what's serving.
+// cancelled, closing sess either way. The accept side has nothing to drive:
+// the tunnel client is what's serving.
 func awaitTunnelSession(ctx context.Context, sess *yamux.Session) (cancelled bool) {
 	cancelled = waitOrCancel(ctx, sess.CloseChan(), func() { sess.Close() })
 	sess.Close()
 	return cancelled
 }
 
-// waitOrCancel waits for either ctx to be cancelled or done to fire. On
-// cancellation it calls onCancel (unblocking whatever done's producer is
-// waiting on) and then waits for done itself, so the producer's goroutine
-// never leaks; it reports true in that case. Otherwise it returns false
-// once done fires on its own.
+// waitOrCancel waits for ctx to be cancelled or done to fire, reporting
+// which. On cancellation it calls onCancel to unblock done's producer, then
+// waits for done so that goroutine can't leak.
 func waitOrCancel(ctx context.Context, done <-chan struct{}, onCancel func()) bool {
 	select {
 	case <-ctx.Done():

@@ -35,8 +35,8 @@ func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// loadPoolAndCert is the CA-pool-plus-keypair loading shared by
-// ServerConfig and ClientConfig; label only affects the load error message.
+// loadPoolAndCert loads the CA pool and keypair shared by ServerConfig and
+// ClientConfig; label only appears in the load error.
 func loadPoolAndCert(caPath, certPath, keyPath, label string) (*x509.CertPool, tls.Certificate, error) {
 	pool, err := LoadCAPool(caPath)
 	if err != nil {
@@ -78,8 +78,7 @@ func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, er
 }
 
 // peerCert returns state's leaf peer certificate, or nil if state carries
-// none — the single place that defines what "no peer cert" means for
-// PeerName and RequireOU.
+// none.
 func peerCert(state *tls.ConnectionState) *x509.Certificate {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return nil
