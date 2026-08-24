@@ -53,9 +53,8 @@ func run() error {
 
 	if *isLocal {
 		return runLocal(ctx, *caPath, *certPath, *keyPath, *remoteURL, *opencodeURL, *serverName)
-	} else {
-		return runRemote(ctx, *caPath, *certPath, *keyPath, *addr)
 	}
+	return runRemote(ctx, *caPath, *certPath, *keyPath, *addr)
 }
 
 func runLocal(ctx context.Context, caPath, certPath, keyPath, remoteURL, opencodeURL, serverName string) error {

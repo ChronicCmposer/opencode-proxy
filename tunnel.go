@@ -22,60 +22,55 @@ const TunnelPath = "/_tunnel"
 // DialTunnel/AcceptTunnel are called repeatedly across reconnects and newly
 // accepted connections, and a yamux.Config must not be shared across
 // sessions.
-type YamuxConfigFactory struct{}
+type YamuxConfigFactory func() *yamux.Config
 
-func NewYamuxConfigFactory() *YamuxConfigFactory {
-	return &YamuxConfigFactory{}
-}
-
-// CreateConfig's StreamOpenTimeout is generous because a browser's GET
-// /event SSE stream is expected to sit idle-but-open for a long time.
-func (f *YamuxConfigFactory) CreateConfig() *yamux.Config {
-	c := yamux.DefaultConfig()
-	c.EnableKeepAlive = true
-	c.KeepAliveInterval = 30 * time.Second
-	c.StreamOpenTimeout = 2 * time.Minute
-	return c
+// NewYamuxConfigFactory's returned factory has a generous StreamOpenTimeout
+// because a browser's GET /event SSE stream is expected to sit idle-but-open
+// for a long time.
+func NewYamuxConfigFactory() YamuxConfigFactory {
+	return func() *yamux.Config {
+		c := yamux.DefaultConfig()
+		c.EnableKeepAlive = true
+		c.KeepAliveInterval = 30 * time.Second
+		c.StreamOpenTimeout = 2 * time.Minute
+		return c
+	}
 }
 
 // TunnelDialerFactory builds a fresh http.Client for each dial attempt, since
 // LocalClient.Run calls DialTunnel repeatedly across reconnects and a client
 // with a broken Transport must not be reused.
-type TunnelDialerFactory struct {
-	tlsConf *tls.Config
-}
+type TunnelDialerFactory func() *http.Client
 
-func NewTunnelDialerFactory(tlsConf *tls.Config) *TunnelDialerFactory {
-	return &TunnelDialerFactory{tlsConf: tlsConf}
-}
-
-func (f *TunnelDialerFactory) CreateClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: f.tlsConf},
+func NewTunnelDialerFactory(tlsConf *tls.Config) TunnelDialerFactory {
+	return func() *http.Client {
+		return &http.Client{
+			Transport: &http.Transport{TLSClientConfig: tlsConf},
+		}
 	}
 }
 
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
-func DialTunnel(ctx context.Context, remoteURL string, dialers *TunnelDialerFactory, yamuxConfigs *YamuxConfigFactory) (*yamux.Session, error) {
+func DialTunnel(ctx context.Context, remoteURL string, dialers TunnelDialerFactory, yamuxConfigs YamuxConfigFactory) (*yamux.Session, error) {
 	c, _, err := websocket.Dial(ctx, remoteURL, &websocket.DialOptions{
-		HTTPClient: dialers.CreateClient(),
+		HTTPClient: dialers(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dial tunnel: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), yamuxRoleClient)
+	return newYamuxSession(conn, yamuxConfigs(), yamuxRoleClient)
 }
 
 // AcceptTunnel assumes the caller has already verified the peer's client
 // certificate carries the tunnel role — it does no such check itself.
-func AcceptTunnel(w http.ResponseWriter, r *http.Request, yamuxConfigs *YamuxConfigFactory) (*yamux.Session, error) {
+func AcceptTunnel(w http.ResponseWriter, r *http.Request, yamuxConfigs YamuxConfigFactory) (*yamux.Session, error) {
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return nil, fmt.Errorf("accept tunnel upgrade: %w", err)
 	}
 	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
-	return newYamuxSession(conn, yamuxConfigs.CreateConfig(), yamuxRoleServer)
+	return newYamuxSession(conn, yamuxConfigs(), yamuxRoleServer)
 }
 
 // yamuxRole selects yamux.Client vs yamux.Server in newYamuxSession. Using an

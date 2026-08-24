@@ -55,7 +55,7 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 // is cancelled, mirroring LocalClient.Run's shutdown handling on the other
 // end — without it, a hijacked tunnel connection is invisible to
 // http.Server.Shutdown and would only end when the process itself exits.
-func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigs *YamuxConfigFactory, l *log.Logger) http.Handler {
+func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigs YamuxConfigFactory, l *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
 
@@ -78,7 +78,7 @@ func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *Se
 	})
 }
 
-func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigs *YamuxConfigFactory, l *log.Logger) {
+func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigs YamuxConfigFactory, l *log.Logger) {
 	sess, err := AcceptTunnel(w, r, yamuxConfigs)
 	if err != nil {
 		l.Printf("tunnel accept failed: %v", err)

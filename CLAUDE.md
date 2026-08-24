@@ -9,8 +9,8 @@ documentation for code that no longer matches.
 Some objects are unsafe to reuse once "used up" — an `http.Server` after it
 has been `Serve`'d and shut down, an `http.Client` after its `Transport` has
 broken, a `yamux.Config` shared across sessions. Rather than constructing one
-instance and reusing it, these get a `*Factory` type that mints a fresh
-instance on demand:
+instance and reusing it, these get a `Factory` type — a named `func() T`
+closure — that mints a fresh instance on demand:
 
 - `TunnelDialerFactory` (tunnel.go) — fresh `http.Client` per dial attempt
 - `LocalServerFactory` (local.go) — fresh `http.Server` per tunnel session
