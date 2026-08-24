@@ -57,6 +57,8 @@ func run() error {
 		return err
 	}
 	certs := CertPaths{CA: *caPath, Cert: *certPath, Key: *keyPath}
+	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
+	tunnelFactory := NewTunnelFactory(yamuxConfigFactory)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,22 +74,21 @@ func run() error {
 			return err
 		}
 		backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
-		return runLocal(ctx, cfg, certs, *remoteURL, *serverName, proxy, backoff, logger)
+		return runLocal(ctx, certs, *remoteURL, *serverName, proxy, tunnelFactory, backoff, logger)
 	}
 
 	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, logger)
-	return runRemote(ctx, cfg, certs, *addr, reg, proxy, logger)
+	return runRemote(ctx, cfg, certs, *addr, reg, proxy, tunnelFactory, logger)
 }
 
-func runLocal(ctx context.Context, cfg Config, certs CertPaths, remoteURL, serverName string, proxy *httputil.ReverseProxy, backoff *Backoff, logger *log.Logger) error {
+func runLocal(ctx context.Context, certs CertPaths, remoteURL, serverName string, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, backoff *Backoff, logger *log.Logger) error {
 	tlsConf, err := NewClientTLSConfig(certs, serverName)
 	if err != nil {
 		return err
 	}
 	dialerFactory := NewTunnelDialerFactory(tlsConf)
 	serverFactory := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
-	tunnelFactory := NewTunnelFactoryFromConfig(cfg)
 	client := NewLocalClient(LocalOptions{
 		RemoteURL: remoteURL,
 		Logger:    logger,
@@ -95,12 +96,11 @@ func runLocal(ctx context.Context, cfg Config, certs CertPaths, remoteURL, serve
 	return client.Run(ctx)
 }
 
-func runRemote(ctx context.Context, cfg Config, certs CertPaths, addr string, reg *SessionRegistry, proxy *httputil.ReverseProxy, logger *log.Logger) error {
+func runRemote(ctx context.Context, cfg Config, certs CertPaths, addr string, reg *SessionRegistry, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, logger *log.Logger) error {
 	tlsConf, err := NewServerTLSConfig(certs)
 	if err != nil {
 		return err
 	}
-	tunnelFactory := NewTunnelFactoryFromConfig(cfg)
 	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger))
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)

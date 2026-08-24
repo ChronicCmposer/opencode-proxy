@@ -56,14 +56,6 @@ func NewTunnelFactory(yamuxConfigFactory YamuxConfigFactory) *TunnelFactory {
 	return &TunnelFactory{yamuxConfigFactory: yamuxConfigFactory}
 }
 
-// NewTunnelFactoryFromConfig builds a TunnelFactory from cfg's yamux
-// tunables. runLocal and runRemote both need one, built identically, so
-// main.go calls this instead of each wiring the YamuxConfigFactory step
-// itself.
-func NewTunnelFactoryFromConfig(cfg Config) *TunnelFactory {
-	return NewTunnelFactory(NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout))
-}
-
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
 // dialerFactory stays a parameter rather than a TunnelFactory field: only the
 // dial side ever needs one, and storing it here would leave the accept side's
