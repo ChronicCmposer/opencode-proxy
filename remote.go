@@ -63,7 +63,7 @@ func (r *SessionRegistry) Clear(sess *yamux.Session) {
 	r.mu.Unlock()
 }
 
-func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy {
+func NewRemoteReverseProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// opencode.tunnel is never resolved: DialContext below ignores

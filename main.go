@@ -100,7 +100,7 @@ func run() error {
 	logger := log.Default()
 
 	if f.isLocal {
-		proxy, err := NewLocalProxy(f.opencodeURL, logger)
+		proxy, err := NewLocalReverseProxy(f.opencodeURL, logger)
 		if err != nil {
 			return err
 		}
@@ -120,7 +120,7 @@ func run() error {
 	}
 
 	reg := NewSessionRegistry()
-	proxy := NewRemoteProxy(reg, logger)
+	proxy := NewRemoteReverseProxy(reg, logger)
 	tlsConf, err := NewServerTLSConfig(certs)
 	if err != nil {
 		return err

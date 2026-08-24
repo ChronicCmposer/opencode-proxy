@@ -60,7 +60,7 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 	cfg := DefaultConfig()
 	remoteLog := log.Default()
 	reg := NewSessionRegistry()
-	remoteProxy := NewRemoteProxy(reg, remoteLog)
+	remoteProxy := NewRemoteReverseProxy(reg, remoteLog)
 	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, remoteProxy, reg, remoteTunnelFactory, cfg.TunnelPath, remoteLog))
@@ -103,7 +103,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	}
 
 	cfg := DefaultConfig()
-	proxy, err := NewLocalProxy("http://"+oc.addr, log.Default())
+	proxy, err := NewLocalReverseProxy("http://"+oc.addr, log.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

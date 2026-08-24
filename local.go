@@ -44,7 +44,7 @@ func NewLocalServer(handler http.Handler) *http.Server {
 	return &http.Server{Handler: handler}
 }
 
-func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
+func NewLocalReverseProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(opencodeURL)
 	if err != nil {
 		return nil, err
