@@ -94,7 +94,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	remoteLog := log.Default()
 	reg := NewSessionRegistry()
 	remoteProxy := NewRemoteProxy(reg, remoteLog)
-	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout))
+	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, remoteProxy, reg, remoteTunnelFactory, cfg.TunnelPath, remoteLog))
 	httpSrv := NewRemoteHTTPServer(remoteAddr, remoteTLS, remoteHandler)
@@ -115,7 +115,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	}
 	dialer := NewTunnelDialer(localTLS)
 	server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
-	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout))
+	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
 	client := NewLocalClient(LocalOptions{
 		RemoteURL: "wss://" + remoteAddr + cfg.TunnelPath,
@@ -278,7 +278,7 @@ func TestNoTunnelReturns503(t *testing.T) {
 	l := log.Default()
 	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, l)
-	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout))
+	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, l))

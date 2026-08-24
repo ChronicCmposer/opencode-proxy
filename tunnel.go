@@ -46,14 +46,28 @@ func NewTunnelDialer(tlsConf *tls.Config) *http.Client {
 }
 
 // TunnelFactory builds tunnel sessions for both halves of the proxy. It holds
-// the yamuxConfig both DialTunnel and AcceptTunnel need, so callers don't
-// have to thread it through separately at every call site.
+// the yamuxConfig and netConnCtx both DialTunnel and AcceptTunnel need, so
+// callers don't have to thread them through separately at every call site.
 type TunnelFactory struct {
 	yamuxConfig *yamux.Config
+	// netConnCtx bounds the lifetime of every wrapped connection's Read/Write
+	// (websocket.NetConn's doc comment: "If cancelled, all reads and writes
+	// on the net.Conn will be cancelled") — deliberately not DialTunnel's own
+	// ctx parameter, which only bounds the dial itself; tying the connection's
+	// whole lifetime to that too would be a second, redundant cancellation
+	// source, since teardown already happens explicitly via sess.Close()
+	// (see closeOnCancel/waitForTunnelClose). context.Background() never
+	// cancels, so nothing but that explicit Close ever ends a session's
+	// reads/writes. Sharing one instance across sessions is safe regardless:
+	// NetConn derives a fresh child context per call
+	// (context.WithCancel(netConnCtx)), whether the parent passed in is
+	// freshly created or shared — nothing here is session-specific to begin
+	// with.
+	netConnCtx context.Context
 }
 
-func NewTunnelFactory(yamuxConfig *yamux.Config) *TunnelFactory {
-	return &TunnelFactory{yamuxConfig: yamuxConfig}
+func NewTunnelFactory(yamuxConfig *yamux.Config, netConnCtx context.Context) *TunnelFactory {
+	return &TunnelFactory{yamuxConfig: yamuxConfig, netConnCtx: netConnCtx}
 }
 
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
@@ -74,7 +88,7 @@ func (f *TunnelFactory) DialTunnel(ctx context.Context, remoteURL string, dialer
 	if err != nil {
 		return nil, fmt.Errorf("dial tunnel: %w", err)
 	}
-	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
+	conn := websocket.NetConn(f.netConnCtx, c, websocket.MessageBinary)
 	return NewYamuxSession(conn, f.yamuxConfig, YamuxRoleClient)
 }
 
@@ -85,7 +99,7 @@ func (f *TunnelFactory) AcceptTunnel(w http.ResponseWriter, r *http.Request) (*y
 	if err != nil {
 		return nil, fmt.Errorf("accept tunnel upgrade: %w", err)
 	}
-	conn := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
+	conn := websocket.NetConn(f.netConnCtx, c, websocket.MessageBinary)
 	return NewYamuxSession(conn, f.yamuxConfig, YamuxRoleServer)
 }
 

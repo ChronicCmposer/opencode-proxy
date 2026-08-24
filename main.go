@@ -58,7 +58,8 @@ func run() error {
 	}
 	certs := CertPaths{CA: *caPath, Cert: *certPath, Key: *keyPath}
 	yamuxConfig := NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
-	tunnelFactory := NewTunnelFactory(yamuxConfig)
+	netConnCtx := context.Background()
+	tunnelFactory := NewTunnelFactory(yamuxConfig, netConnCtx)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
