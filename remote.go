@@ -86,12 +86,12 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	}
 	l.Printf("tunnel connected from %s", PeerName(r.TLS))
 	reg.Set(sess)
+	defer reg.Clear(sess)
 	if cancelled, _ := runTunnelSession(ctx, sess, nil); cancelled {
 		l.Printf("tunnel closed on shutdown")
 	} else {
 		l.Printf("tunnel disconnected")
 	}
-	reg.Clear(sess)
 }
 
 // NewRemoteHTTPServer wraps handler with the addr/TLS the public listener

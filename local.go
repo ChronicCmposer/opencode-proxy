@@ -91,35 +91,38 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers Tun
 }
 
 func (c *LocalClient) Run(ctx context.Context) error {
-	b := c.backoff
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	for ctx.Err() == nil {
 		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialers, c.yamuxConfigs)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
-			if !sleepCtx(ctx, b.Next()) {
-				return ctx.Err()
+			if !c.waitToRetry(ctx) {
+				break
 			}
 			continue
 		}
 		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
-		b.Reset()
+		c.backoff.Reset()
 
 		srv := c.servers()
 		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
 		if cancelled {
-			return ctx.Err()
+			break
 		}
 		if !errors.Is(serveErr, http.ErrServerClosed) {
 			c.log.Printf("tunnel session ended: %v", serveErr)
 		}
 
-		if !sleepCtx(ctx, b.Next()) {
-			return ctx.Err()
+		if !c.waitToRetry(ctx) {
+			break
 		}
 	}
+	return ctx.Err()
+}
+
+// waitToRetry sleeps for the next backoff interval, reporting false if ctx
+// is cancelled first.
+func (c *LocalClient) waitToRetry(ctx context.Context) bool {
+	return sleepCtx(ctx, c.backoff.Next())
 }
 
 // waitOrCancel waits for either ctx to be cancelled or done to fire. On

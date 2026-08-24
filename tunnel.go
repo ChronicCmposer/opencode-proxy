@@ -102,15 +102,20 @@ func (r yamuxRole) String() string {
 // nil or cancelled is true.
 func runTunnelSession(ctx context.Context, sess *yamux.Session, run func() error) (cancelled bool, err error) {
 	done := sess.CloseChan()
+	var errCh chan error
 	if run != nil {
+		errCh = make(chan error, 1)
 		ch := make(chan struct{})
-		go func() { err = run(); close(ch) }()
+		go func() { errCh <- run(); close(ch) }()
 		done = ch
 	}
 	cancelled = waitOrCancel(ctx, done, func() { sess.Close() })
 	sess.Close()
 	if cancelled {
 		return true, nil
+	}
+	if errCh != nil {
+		err = <-errCh
 	}
 	return false, err
 }
