@@ -87,7 +87,10 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFacto
 // clean SIGTERM.
 func (c *LocalClient) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
-		sess, err := c.tunnelFactory.DialTunnel(ctx, c.opts.RemoteURL, c.dialerFactory)
+		// Minted fresh each attempt: a client whose Transport broke on a
+		// prior failed or dropped connection must not be reused.
+		dialer := c.dialerFactory()
+		sess, err := c.tunnelFactory.DialTunnel(ctx, c.opts.RemoteURL, dialer)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !c.waitToRetry(ctx) {

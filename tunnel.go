@@ -32,9 +32,9 @@ func NewYamuxConfigFactory(keepAliveInterval, streamOpenTimeout time.Duration) Y
 	}
 }
 
-// TunnelDialerFactory builds a fresh http.Client for each dial attempt, since
-// LocalClient.Run calls DialTunnel repeatedly across reconnects and a client
-// with a broken Transport must not be reused.
+// TunnelDialerFactory builds a fresh http.Client for each dial attempt:
+// LocalClient.Run calls it before every DialTunnel across reconnects, since a
+// client with a broken Transport must not be reused.
 type TunnelDialerFactory func() *http.Client
 
 func NewTunnelDialerFactory(tlsConf *tls.Config) TunnelDialerFactory {
@@ -57,12 +57,14 @@ func NewTunnelFactory(yamuxConfigFactory YamuxConfigFactory) *TunnelFactory {
 }
 
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
-// dialerFactory stays a parameter rather than a TunnelFactory field: only the
-// dial side ever needs one, and storing it here would leave the accept side's
-// factory holding a meaningless nil field.
-func (f *TunnelFactory) DialTunnel(ctx context.Context, remoteURL string, dialerFactory TunnelDialerFactory) (*yamux.Session, error) {
+// dialer stays a parameter rather than a TunnelFactory field: only the dial
+// side ever needs one, and storing it here would leave the accept side
+// holding a meaningless nil field. Pass a freshly minted dialer each call:
+// unlike a factory parameter, a plain *http.Client doesn't stop a caller from
+// reusing one whose Transport already broke.
+func (f *TunnelFactory) DialTunnel(ctx context.Context, remoteURL string, dialer *http.Client) (*yamux.Session, error) {
 	c, _, err := websocket.Dial(ctx, remoteURL, &websocket.DialOptions{
-		HTTPClient: dialerFactory(),
+		HTTPClient: dialer,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dial tunnel: %w", err)
