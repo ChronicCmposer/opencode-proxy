@@ -107,7 +107,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 	dialer := NewTunnelDialer(localTLS)
-	server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
+	server := &http.Server{Handler: WithVersionHeader(LocalVersionHeader, Version, proxy)} // safe to reuse — see run() in main.go
 	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
 	client := NewLocalClient("wss://"+remoteAddr+cfg.TunnelPath, nil, dialer, server, tunnelFactory, backoff)

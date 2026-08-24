@@ -159,7 +159,7 @@ func TestLocalClientRunStopsOnCancelDuringSession(t *testing.T) {
 	remoteURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
 	backoff := NewBackoff(time.Hour, time.Hour)
-	server := NewLocalServer(http.NotFoundHandler())
+	server := &http.Server{Handler: http.NotFoundHandler()} // safe to reuse — see run() in main.go
 	client := NewLocalClient(remoteURL, nil, srv.Client(), server, tunnelFactory, backoff)
 
 	runLocalClientAndWait(t, client, 100*time.Millisecond)

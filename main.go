@@ -111,7 +111,14 @@ func run() error {
 		}
 		dialer := NewTunnelDialer(tlsConf)
 		handler := WithVersionHeader(LocalVersionHeader, Version, proxy)
-		server := &http.Server{Handler: handler} // safe to reuse across reconnects — see NewLocalServer's doc comment
+		// server is safe to share across every reconnect: net/http only
+		// leaves a Server unusable for a future Serve call once Shutdown or
+		// Close has actually been invoked on it (permanently, via an
+		// internal flag nothing else ever sets). Run never calls either —
+		// it ends each session by closing the yamux session (this Serve
+		// call's Listener), which just makes Serve return; the Server
+		// itself is untouched.
+		server := &http.Server{Handler: handler}
 		client := NewLocalClient(f.remoteURL, logger, dialer, server, tunnelFactory, backoff)
 		return client.Run(ctx)
 	}

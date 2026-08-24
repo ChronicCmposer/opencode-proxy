@@ -21,12 +21,14 @@ first.** `TunnelDialerFactory`, `LocalServerFactory`, and
 `YamuxConfigFactory` all used to exist here, minting a fresh
 `http.Client`/`http.Server`/`yamux.Config` per use on the assumption that
 reuse was unsafe. All three assumptions turned out to be wrong once actually
-checked: `NewTunnelDialer` (tunnel.go), `NewLocalServer` (local.go), and
-`NewYamuxConfig` (tunnel.go) each build one instance now, shared for the
-process's whole lifetime — no Factory currently exists in this codebase.
-Their doc comments — and `TunnelFactory.DialTunnel`'s — carry the reasoning
-for why each one's reuse is safe; don't restore any of the three without
-redoing that kind of check.
+checked: `NewTunnelDialer` and `NewYamuxConfig` (tunnel.go) each build one
+instance now, shared for the process's whole lifetime; the local
+`*http.Server` is built the same way but inlined directly in `run()`
+(main.go), with no constructor of its own — no Factory or dedicated
+constructor for it currently exists in this codebase. The comment at each
+construction site carries the reasoning for why that reuse is safe; don't
+restore a factory — or a constructor for the local server — without redoing
+that kind of check.
 
 `TunnelFactory` (tunnel.go) is a related but distinct shape: dialing and
 accepting a tunnel session are different operations, not two ways of minting

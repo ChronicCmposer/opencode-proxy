@@ -25,19 +25,6 @@ type LocalClient struct {
 	backoff       *Backoff
 }
 
-// NewLocalServer builds the http.Server LocalClient.Run serves each
-// tunnel session over.
-//
-// A single instance is safe to share across every reconnect: net/http
-// only leaves a Server unusable for a future Serve call once Shutdown or
-// Close has actually been invoked on it (permanently, via an internal
-// flag nothing else ever sets). Run never calls either — it ends each
-// session by closing the yamux session (this Serve call's Listener),
-// which just makes Serve return; the Server itself is untouched.
-func NewLocalServer(handler http.Handler) *http.Server {
-	return &http.Server{Handler: handler}
-}
-
 func NewLocalReverseProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(opencodeURL)
 	if err != nil {
