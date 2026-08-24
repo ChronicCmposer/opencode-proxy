@@ -11,6 +11,10 @@ type SessionRegistry struct {
 	sess *yamux.Session
 }
 
+func NewSessionRegistry() *SessionRegistry {
+	return &SessionRegistry{}
+}
+
 func (r *SessionRegistry) Set(sess *yamux.Session) {
 	r.mu.Lock()
 	old := r.sess

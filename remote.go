@@ -51,22 +51,22 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 // before dispatch. ctx governs an accepted tunnel's lifetime: a hijacked
 // connection is invisible to http.Server.Shutdown, so without it the
 // session would only end when the process exits.
-func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigs YamuxConfigFactory, l *log.Logger) http.Handler {
+func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigFactory YamuxConfigFactory, l *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
 
 		if r.URL.Path == TunnelPath {
-			if err := RequireOU(state, OUTunnel); err != nil {
-				l.Printf("rejected tunnel upgrade from %s: %v", PeerName(state), err)
+			if err := VerifyPeerRole(state, OUTunnel); err != nil {
+				l.Printf("rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			acceptTunnel(ctx, w, r, reg, yamuxConfigs, l)
+			acceptTunnel(ctx, w, r, reg, yamuxConfigFactory, l)
 			return
 		}
 
-		if err := RequireOU(state, OUDevice); err != nil {
-			l.Printf("rejected request from %s: %v", PeerName(state), err)
+		if err := VerifyPeerRole(state, OUDevice); err != nil {
+			l.Printf("rejected request from %s: %v", GetPeerSubjectCN(state), err)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -74,13 +74,13 @@ func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *Se
 	})
 }
 
-func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigs YamuxConfigFactory, l *log.Logger) {
-	sess, err := AcceptTunnel(w, r, yamuxConfigs)
+func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigFactory YamuxConfigFactory, l *log.Logger) {
+	sess, err := AcceptTunnel(w, r, yamuxConfigFactory)
 	if err != nil {
 		l.Printf("tunnel accept failed: %v", err)
 		return
 	}
-	l.Printf("tunnel connected from %s", PeerName(r.TLS))
+	l.Printf("tunnel connected from %s", GetPeerSubjectCN(r.TLS))
 	reg.Set(sess)
 	defer reg.Clear(sess)
 	if awaitTunnelSession(ctx, sess) {

@@ -22,7 +22,7 @@ func stateFor(t *testing.T, leaf *testLeaf) *tls.ConnectionState {
 	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
 }
 
-func TestRequireOU(t *testing.T) {
+func TestVerifyPeerRole(t *testing.T) {
 	ca, err := newTestCA()
 	if err != nil {
 		t.Fatal(err)
@@ -56,16 +56,16 @@ func TestRequireOU(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state := stateFor(t, tt.leaf)
-			err := RequireOU(state, tt.wantOU)
+			err := VerifyPeerRole(state, tt.wantOU)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("RequireOU() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("VerifyPeerRole() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-func TestRequireOUNilState(t *testing.T) {
-	if err := RequireOU(nil, OUDevice); err == nil {
+func TestVerifyPeerRoleNilState(t *testing.T) {
+	if err := VerifyPeerRole(nil, OUDevice); err == nil {
 		t.Fatal("expected error for nil connection state")
 	}
 }
@@ -96,7 +96,7 @@ func TestServerAndClientConfig(t *testing.T) {
 	serverCertPath := writePEM(t, dir, "server.crt", serverLeaf.CertPEM)
 	serverKeyPath := writePEM(t, dir, "server.key", serverLeaf.KeyPEM)
 
-	serverConf, err := ServerConfig(caPath, serverCertPath, serverKeyPath)
+	serverConf, err := NewServerConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestServerAndClientConfig(t *testing.T) {
 	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
 	tunnelKeyPath := writePEM(t, dir, "tunnel.key", tunnelLeaf.KeyPEM)
 
-	clientConf, err := ClientConfig(caPath, tunnelCertPath, tunnelKeyPath, "127.0.0.1")
+	clientConf, err := NewClientConfig(CertPaths{CA: caPath, Cert: tunnelCertPath, Key: tunnelKeyPath}, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestServerAndClientConfig(t *testing.T) {
 
 func TestServerConfigBadCAPath(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := ServerConfig(filepath.Join(dir, "missing.crt"), "", ""); err == nil {
+	if _, err := NewServerConfig(CertPaths{CA: filepath.Join(dir, "missing.crt")}); err == nil {
 		t.Fatal("expected error for a missing CA file")
 	}
 }
@@ -158,7 +158,7 @@ func TestServerConfigMismatchedKeypairWrapsLabel(t *testing.T) {
 	certPath := writePEM(t, dir, "server.crt", leaf.CertPEM)
 	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
 
-	_, err = ServerConfig(caPath, certPath, mismatchedKeyPath)
+	_, err = NewServerConfig(CertPaths{CA: caPath, Cert: certPath, Key: mismatchedKeyPath})
 	if err == nil {
 		t.Fatal("expected error for a mismatched cert/key pair")
 	}
@@ -186,7 +186,7 @@ func TestClientConfigMismatchedKeypairWrapsLabel(t *testing.T) {
 	certPath := writePEM(t, dir, "tunnel.crt", leaf.CertPEM)
 	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
 
-	_, err = ClientConfig(caPath, certPath, mismatchedKeyPath, "")
+	_, err = NewClientConfig(CertPaths{CA: caPath, Cert: certPath, Key: mismatchedKeyPath}, "")
 	if err == nil {
 		t.Fatal("expected error for a mismatched cert/key pair")
 	}

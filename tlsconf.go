@@ -23,6 +23,15 @@ const (
 
 var ErrWrongRole = errors.New("client certificate is not valid for this endpoint")
 
+// CertPaths groups the three PEM paths that always travel together: nothing
+// loads one without the other two, and passing them separately cost every
+// function along the wiring path three positional string parameters.
+type CertPaths struct {
+	CA   string
+	Cert string
+	Key  string
+}
+
 func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	pem, err := os.ReadFile(caPath)
 	if err != nil {
@@ -35,24 +44,24 @@ func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// loadPoolAndCert loads the CA pool and keypair shared by ServerConfig and
-// ClientConfig; label only appears in the load error.
-func loadPoolAndCert(caPath, certPath, keyPath, label string) (*x509.CertPool, tls.Certificate, error) {
-	pool, err := LoadCAPool(caPath)
+// loadPoolAndCert loads the CA pool and keypair shared by NewServerConfig and
+// NewClientConfig; label only appears in the load error.
+func loadPoolAndCert(certs CertPaths, label string) (*x509.CertPool, tls.Certificate, error) {
+	pool, err := LoadCAPool(certs.CA)
 	if err != nil {
 		return nil, tls.Certificate{}, err
 	}
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	cert, err := tls.LoadX509KeyPair(certs.Cert, certs.Key)
 	if err != nil {
 		return nil, tls.Certificate{}, fmt.Errorf("load %s keypair: %w", label, err)
 	}
 	return pool, cert, nil
 }
 
-// ServerConfig verifies chain-to-CA only; per-request role checking is
-// RequireOU's job, not this.
-func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
-	pool, cert, err := loadPoolAndCert(caPath, certPath, keyPath, "server")
+// NewServerConfig verifies chain-to-CA only; per-request role checking is
+// VerifyPeerRole's job, not this.
+func NewServerConfig(certs CertPaths) (*tls.Config, error) {
+	pool, cert, err := loadPoolAndCert(certs, "server")
 	if err != nil {
 		return nil, err
 	}
@@ -64,8 +73,8 @@ func ServerConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 	}, nil
 }
 
-func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, error) {
-	pool, cert, err := loadPoolAndCert(caPath, certPath, keyPath, "client")
+func NewClientConfig(certs CertPaths, serverName string) (*tls.Config, error) {
+	pool, cert, err := loadPoolAndCert(certs, "client")
 	if err != nil {
 		return nil, err
 	}
@@ -77,27 +86,31 @@ func ClientConfig(caPath, certPath, keyPath, serverName string) (*tls.Config, er
 	}, nil
 }
 
-// peerCert returns state's leaf peer certificate, or nil if state carries
+// leafCertOf returns state's leaf peer certificate, or nil if state carries
 // none.
-func peerCert(state *tls.ConnectionState) *x509.Certificate {
+func leafCertOf(state *tls.ConnectionState) *x509.Certificate {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return nil
 	}
 	return state.PeerCertificates[0]
 }
 
-func PeerName(state *tls.ConnectionState) string {
-	cert := peerCert(state)
+// GetPeerSubjectCN returns the peer leaf certificate's Subject Common Name,
+// or "<none>" when there is no peer certificate. It exists for log lines, so
+// it never fails — an unidentified peer is still worth logging.
+func GetPeerSubjectCN(state *tls.ConnectionState) string {
+	cert := leafCertOf(state)
 	if cert == nil {
 		return "<none>"
 	}
 	return cert.Subject.CommonName
 }
 
-// RequireOU assumes chain verification already happened (via ServerConfig's
+// VerifyPeerRole reports whether the peer's certificate carries the ou role,
+// assuming chain verification already happened (via NewServerConfig's
 // ClientAuth) — it only checks role.
-func RequireOU(state *tls.ConnectionState, ou string) error {
-	cert := peerCert(state)
+func VerifyPeerRole(state *tls.ConnectionState, ou string) error {
+	cert := leafCertOf(state)
 	if cert == nil {
 		return ErrWrongRole
 	}

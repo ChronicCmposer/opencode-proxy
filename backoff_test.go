@@ -1,9 +1,26 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// Short bounds keep the 1:30 floor-to-cap ratio of the defaults, so the growth
+// and capping behaviour under test is the same one production sees.
+const (
+	testBackoffMin = time.Millisecond
+	testBackoffMax = 30 * time.Millisecond
+)
+
+func TestNewBackoffUsesInjectedBounds(t *testing.T) {
+	b := NewBackoff(testBackoffMin, testBackoffMax)
+	if b.min != testBackoffMin || b.max != testBackoffMax {
+		t.Fatalf("bounds = (%v, %v), want (%v, %v)", b.min, b.max, testBackoffMin, testBackoffMax)
+	}
+}
 
 func TestBackoffGrowsAndCaps(t *testing.T) {
-	b := NewBackoff()
+	b := NewBackoff(testBackoffMin, testBackoffMax)
 	prevMin := b.min
 	for i := 0; i < 10; i++ {
 		d := b.Next()
@@ -17,7 +34,7 @@ func TestBackoffGrowsAndCaps(t *testing.T) {
 }
 
 func TestBackoffResetReturnsToFloor(t *testing.T) {
-	b := NewBackoff()
+	b := NewBackoff(testBackoffMin, testBackoffMax)
 	for i := 0; i < 5; i++ {
 		b.Next()
 	}

@@ -10,8 +10,8 @@ type Backoff struct {
 	attempt  int
 }
 
-func NewBackoff() *Backoff {
-	return &Backoff{min: time.Second, max: 30 * time.Second}
+func NewBackoff(min, max time.Duration) *Backoff {
+	return &Backoff{min: min, max: max}
 }
 
 // Next never returns more than b.max: jitter is added within the cap rather

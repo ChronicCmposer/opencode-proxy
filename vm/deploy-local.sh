@@ -73,6 +73,11 @@ REMOTE_URL=$remote_url
 OPENCODE_URL=$opencode_url
 ENV
 
+# Shipped from the repo rather than written inline so the defaults have one
+# source of truth. Every key is optional — delete one and the binary's built-in
+# default applies.
+install -m 644 "$work_dir/src/config.example.json" /etc/opencode-proxy/config.json
+
 install -m 644 "$work_dir/src/systemd/opencode-proxy-local.service" /etc/systemd/system/opencode-proxy-local.service
 
 systemctl daemon-reload

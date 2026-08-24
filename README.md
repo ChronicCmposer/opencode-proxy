@@ -241,6 +241,41 @@ there's a window where they can briefly disagree.
    a client certificate — choose the one you just installed — then present
    opencode's own login (the `OPENCODE_SERVER_PASSWORD` from step 4).
 
+## Tuning
+
+Reconnect backoff and the yamux session timeouts come from a JSON file passed
+with `--config`. Both `deploy.sh` (EC2) and `vm/deploy-local.sh` (VM) install
+`config.example.json` from the repo to `/etc/opencode-proxy/config.json`, and
+both systemd units point `--config` at it:
+
+```json
+{
+  "backoff-min": "1s",
+  "backoff-max": "30s",
+  "keepalive-interval": "30s",
+  "stream-open-timeout": "2m"
+}
+```
+
+| Key | What it controls |
+| --- | --- |
+| `backoff-min` | Delay before the local client's first reconnect attempt; each attempt after that doubles it. |
+| `backoff-max` | Cap on the reconnect delay, jitter included. |
+| `keepalive-interval` | How often an idle yamux session pings its peer, so a tunnel dropped by a NAT or load balancer is noticed rather than waited on. |
+| `stream-open-timeout` | How long a stream may take to open. Generous by default: a browser's `GET /event` SSE stream sits idle-but-open for a long time. |
+
+Every key is optional and layered over the built-in defaults shown above, so a
+file setting one key leaves the rest alone — and omitting `--config` entirely is
+valid. Values are Go duration strings (`"90s"`, `"2m"`, `"1h30m"`). Edit the
+file and `systemctl restart opencode-proxy` (or `opencode-proxy-local`) to
+apply.
+
+The proxy refuses to start on a config it can't honour rather than falling back
+silently — a non-positive duration, a `backoff-min` above `backoff-max`, an
+unparseable duration, or a misspelled key each abort startup with the offending
+key named. Check `journalctl -u opencode-proxy` if a unit won't come up after a
+config edit.
+
 ## Verifying it end-to-end
 
 - `make test` — unit tests plus a loopback integration test covering

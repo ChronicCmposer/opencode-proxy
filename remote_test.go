@@ -12,9 +12,10 @@ import (
 
 func newTestRemoteHandler(t *testing.T) (http.Handler, *SessionRegistry) {
 	t.Helper()
-	reg := &SessionRegistry{}
+	cfg := DefaultConfig()
+	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, log.Default())
-	handler := NewRemoteHandler(context.Background(), proxy, reg, NewYamuxConfigFactory(), log.Default())
+	handler := NewRemoteHandler(context.Background(), proxy, reg, NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), log.Default())
 	return handler, reg
 }
 

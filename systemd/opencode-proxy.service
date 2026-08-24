@@ -16,6 +16,7 @@ ExecStart=/usr/bin/ctr run --rm --net-host \
   --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \
   ${IMAGE_REF} opencode-proxy \
   --remote --addr :443 \
+  --config /etc/opencode-proxy/config.json \
   --ca /etc/opencode-proxy/ca.crt \
   --cert /etc/opencode-proxy/server.crt \
   --key /etc/opencode-proxy/server.key

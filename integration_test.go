@@ -90,12 +90,13 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	remoteAddr := ln.Addr().String()
 	ln.Close() // RemoteServer binds its own listener via ListenAndServeTLS
 
+	cfg := DefaultConfig()
 	remoteLog := log.Default()
-	reg := &SessionRegistry{}
+	reg := NewSessionRegistry()
 	remoteProxy := NewRemoteProxy(reg, remoteLog)
-	remoteYamuxConfigs := NewYamuxConfigFactory()
+	remoteYamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
 	ctx, cancel := context.WithCancel(context.Background())
-	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, remoteProxy, reg, remoteYamuxConfigs, remoteLog))
+	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, remoteProxy, reg, remoteYamuxConfigFactory, remoteLog))
 	httpSrv := NewRemoteHTTPServer(remoteAddr, remoteTLS, remoteHandler)
 	srv := NewRemoteServer(httpSrv)
 	go srv.ListenAndServe(ctx)
@@ -112,13 +113,13 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dialers := NewTunnelDialerFactory(localTLS)
-	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
-	yamuxConfigs := NewYamuxConfigFactory()
-	backoff := NewBackoff()
+	dialerFactory := NewTunnelDialerFactory(localTLS)
+	serverFactory := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
+	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
+	backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
 	client := NewLocalClient(LocalOptions{
 		RemoteURL: "wss://" + remoteAddr + "/_tunnel",
-	}, proxy, dialers, servers, yamuxConfigs, backoff)
+	}, proxy, dialerFactory, serverFactory, yamuxConfigFactory, backoff)
 	lctx, lcancel := context.WithCancel(context.Background())
 	t.Cleanup(lcancel)
 	go client.Run(lctx)
@@ -273,13 +274,14 @@ func TestNoTunnelReturns503(t *testing.T) {
 		Certificates: []tls.Certificate{serverCert}, ClientCAs: pool,
 		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12,
 	}
+	cfg := DefaultConfig()
 	l := log.Default()
-	reg := &SessionRegistry{}
+	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, l)
-	yamuxConfigs := NewYamuxConfigFactory()
+	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, yamuxConfigs, l))
+	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, yamuxConfigFactory, l))
 	srv := NewRemoteServer(NewRemoteHTTPServer(addr, tlsConf, handler))
 	go srv.ListenAndServe(ctx)
 	waitForListener(t, addr)

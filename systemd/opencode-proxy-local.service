@@ -17,6 +17,7 @@ ExecStart=/usr/bin/ctr run --rm --net-host \
   ${IMAGE_REF} opencode-proxy-local \
   --local --remote-url ${REMOTE_URL} \
   --opencode-url ${OPENCODE_URL} \
+  --config /etc/opencode-proxy/config.json \
   --ca /etc/opencode-proxy/ca.crt \
   --cert /etc/opencode-proxy/tunnel.crt \
   --key /etc/opencode-proxy/tunnel.key

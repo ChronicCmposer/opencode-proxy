@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http/httputil"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,6 +34,8 @@ func run() error {
 		certPath = flag.String("cert", "", "path to this endpoint's certificate (PEM)")
 		keyPath  = flag.String("key", "", "path to this endpoint's private key (PEM)")
 
+		configPath = flag.String("config", "", "path to the JSON config file (optional; built-in defaults are used when omitted)")
+
 		remoteURL   = flag.String("remote-url", "", "--local: wss:// URL of the remote proxy's tunnel endpoint")
 		opencodeURL = flag.String("opencode-url", "http://127.0.0.1:4096", "--local: URL of the local opencode server")
 		serverName  = flag.String("server-name", "", "--local: TLS server name to verify on the remote (defaults to the host in --remote-url)")
@@ -48,49 +51,56 @@ func run() error {
 		return fmt.Errorf("--ca, --cert, and --key are required")
 	}
 
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	certs := CertPaths{CA: *caPath, Cert: *certPath, Key: *keyPath}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	logger := log.Default()
+
 	if *isLocal {
-		return runLocal(ctx, *caPath, *certPath, *keyPath, *remoteURL, *opencodeURL, *serverName)
+		if *remoteURL == "" {
+			return fmt.Errorf("--remote-url is required with --local")
+		}
+		proxy, err := NewLocalProxy(*opencodeURL, logger)
+		if err != nil {
+			return err
+		}
+		backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
+		return runLocal(ctx, cfg, certs, *remoteURL, *serverName, proxy, backoff, logger)
 	}
-	return runRemote(ctx, *caPath, *certPath, *keyPath, *addr)
+
+	reg := NewSessionRegistry()
+	proxy := NewRemoteProxy(reg, logger)
+	return runRemote(ctx, cfg, certs, *addr, reg, proxy, logger)
 }
 
-func runLocal(ctx context.Context, caPath, certPath, keyPath, remoteURL, opencodeURL, serverName string) error {
-	if remoteURL == "" {
-		return fmt.Errorf("--remote-url is required with --local")
-	}
-	tlsConf, err := ClientConfig(caPath, certPath, keyPath, serverName)
+func runLocal(ctx context.Context, cfg Config, certs CertPaths, remoteURL, serverName string, proxy *httputil.ReverseProxy, backoff *Backoff, logger *log.Logger) error {
+	tlsConf, err := NewClientConfig(certs, serverName)
 	if err != nil {
 		return err
 	}
-	l := log.Default()
-	proxy, err := NewLocalProxy(opencodeURL, l)
-	if err != nil {
-		return err
-	}
-	dialers := NewTunnelDialerFactory(tlsConf)
-	servers := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
-	yamuxConfigs := NewYamuxConfigFactory()
-	backoff := NewBackoff()
+	dialerFactory := NewTunnelDialerFactory(tlsConf)
+	serverFactory := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
+	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
 	client := NewLocalClient(LocalOptions{
 		RemoteURL: remoteURL,
-		Logger:    l,
-	}, proxy, dialers, servers, yamuxConfigs, backoff)
+		Logger:    logger,
+	}, proxy, dialerFactory, serverFactory, yamuxConfigFactory, backoff)
 	return client.Run(ctx)
 }
 
-func runRemote(ctx context.Context, caPath, certPath, keyPath, addr string) error {
-	tlsConf, err := ServerConfig(caPath, certPath, keyPath)
+func runRemote(ctx context.Context, cfg Config, certs CertPaths, addr string, reg *SessionRegistry, proxy *httputil.ReverseProxy, logger *log.Logger) error {
+	tlsConf, err := NewServerConfig(certs)
 	if err != nil {
 		return err
 	}
-	l := log.Default()
-	reg := &SessionRegistry{}
-	proxy := NewRemoteProxy(reg, l)
-	yamuxConfigs := NewYamuxConfigFactory()
-	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, yamuxConfigs, l))
+	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
+	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, yamuxConfigFactory, logger))
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)
 	return srv.ListenAndServe(ctx)

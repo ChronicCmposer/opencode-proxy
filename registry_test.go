@@ -23,7 +23,7 @@ func newTestSession(t *testing.T) *yamux.Session {
 }
 
 func TestSessionRegistrySetReplacesAndClosesOld(t *testing.T) {
-	var reg SessionRegistry
+	reg := NewSessionRegistry()
 
 	first := newTestSession(t)
 	reg.Set(first)
@@ -42,7 +42,7 @@ func TestSessionRegistrySetReplacesAndClosesOld(t *testing.T) {
 }
 
 func TestSessionRegistryClearOnlyClobbersMatchingSession(t *testing.T) {
-	var reg SessionRegistry
+	reg := NewSessionRegistry()
 
 	first := newTestSession(t)
 	reg.Set(first)
@@ -61,7 +61,7 @@ func TestSessionRegistryClearOnlyClobbersMatchingSession(t *testing.T) {
 }
 
 func TestSessionRegistryGetReturnsNilForClosedSession(t *testing.T) {
-	var reg SessionRegistry
+	reg := NewSessionRegistry()
 
 	sess := newTestSession(t)
 	reg.Set(sess)

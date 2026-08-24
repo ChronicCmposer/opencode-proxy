@@ -1,0 +1,6 @@
+{
+  "backoff-min": "1s",
+  "backoff-max": "30s",
+  "keepalive-interval": "30s",
+  "stream-open-timeout": "2m"
+}
