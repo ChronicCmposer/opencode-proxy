@@ -94,6 +94,15 @@ func TestLoadConfigErrors(t *testing.T) {
 	}
 }
 
+// Equal bounds are the boundary between valid and invalid: validate rejects
+// BackoffMin > BackoffMax, so BackoffMin == BackoffMax must still be accepted.
+func TestLoadConfigAllowsEqualBackoffBounds(t *testing.T) {
+	path := writeConfig(t, `{"backoff-min": "30s", "backoff-max": "30s"}`)
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("LoadConfig() error = %v, want nil for backoff-min == backoff-max", err)
+	}
+}
+
 func TestLoadConfigMissingFile(t *testing.T) {
 	_, err := LoadConfig(filepath.Join(t.TempDir(), "absent.json"))
 	if err == nil {

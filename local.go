@@ -150,7 +150,15 @@ func (b *Backoff) Next() time.Duration {
 		return base
 	}
 	jitter := time.Duration(rand.Int63n(jitterMax))
-	return min(base+jitter, b.max)
+	// base+jitter, not min(base+jitter, b.max): nextBase guarantees base <=
+	// b.max, but base can get close enough to time.Duration's int64 range
+	// limit that adding jitter on top overflows into a negative duration
+	// before min ever gets to compare it against b.max. Checking the
+	// headroom first avoids ever forming that sum.
+	if jitter > b.max-base {
+		return b.max
+	}
+	return base + jitter
 }
 
 // nextBase returns the un-jittered delay for the current attempt, capped at
