@@ -37,8 +37,6 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 				}
 				return sess.Open()
 			},
-			ResponseHeaderTimeout: 0,
-			IdleConnTimeout:       0,
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -87,7 +85,7 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	l.Printf("tunnel connected from %s", PeerName(r.TLS))
 	reg.Set(sess)
 	defer reg.Clear(sess)
-	if cancelled, _ := runTunnelSession(ctx, sess, nil); cancelled {
+	if awaitTunnelSession(ctx, sess) {
 		l.Printf("tunnel closed on shutdown")
 	} else {
 		l.Printf("tunnel disconnected")

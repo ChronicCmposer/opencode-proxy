@@ -91,33 +91,48 @@ func (r yamuxRole) String() string {
 	return "client"
 }
 
-// runTunnelSession runs run (if non-nil) on sess in a goroutine and waits for
-// it to finish or ctx to be cancelled first, closing sess either way; if run
-// is nil it just waits for sess to close on its own (the accept side has
-// nothing to drive — the tunnel client is what's serving). This is the
-// cancel-or-finish shutdown dance shared by LocalClient.Run (which serves an
-// http.Server over sess) and acceptTunnel (which only waits on it), so both
-// ends handle ctx cancellation identically. cancelled reports whether ctx
-// cancellation is why it returned; err is run's result, or nil when run is
-// nil or cancelled is true.
-func runTunnelSession(ctx context.Context, sess *yamux.Session, run func() error) (cancelled bool, err error) {
-	done := sess.CloseChan()
-	var errCh chan error
-	if run != nil {
-		errCh = make(chan error, 1)
-		ch := make(chan struct{})
-		go func() { errCh <- run(); close(ch) }()
-		done = ch
-	}
+// serveTunnelSession runs run on sess in a goroutine and waits for it to
+// finish or ctx to be cancelled first, closing sess either way. It's the
+// LocalClient.Run half of the shutdown dance shared with
+// awaitTunnelSession below, so both ends handle ctx cancellation
+// identically. cancelled reports whether ctx cancellation is why it
+// returned; err is run's result, and always nil when cancelled.
+func serveTunnelSession(ctx context.Context, sess *yamux.Session, run func() error) (cancelled bool, err error) {
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	go func() { errCh <- run(); close(done) }()
 	cancelled = waitOrCancel(ctx, done, func() { sess.Close() })
 	sess.Close()
 	if cancelled {
 		return true, nil
 	}
-	if errCh != nil {
-		err = <-errCh
+	return false, <-errCh
+}
+
+// awaitTunnelSession waits for sess to close on its own or for ctx to be
+// cancelled, closing sess either way, and reports whether cancellation is
+// why it returned. This is the accept side's half of the dance: it has
+// nothing to drive, since the tunnel client is what's serving.
+func awaitTunnelSession(ctx context.Context, sess *yamux.Session) (cancelled bool) {
+	cancelled = waitOrCancel(ctx, sess.CloseChan(), func() { sess.Close() })
+	sess.Close()
+	return cancelled
+}
+
+// waitOrCancel waits for either ctx to be cancelled or done to fire. On
+// cancellation it calls onCancel (unblocking whatever done's producer is
+// waiting on) and then waits for done itself, so the producer's goroutine
+// never leaks; it reports true in that case. Otherwise it returns false
+// once done fires on its own.
+func waitOrCancel(ctx context.Context, done <-chan struct{}, onCancel func()) bool {
+	select {
+	case <-ctx.Done():
+		onCancel()
+		<-done
+		return true
+	case <-done:
+		return false
 	}
-	return false, err
 }
 
 // newYamuxSession wraps conn (already an established websocket connection)

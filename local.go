@@ -43,7 +43,7 @@ func NewLocalServerFactory(handler http.Handler) LocalServerFactory {
 
 // NewLocalProxy builds the reverse proxy to opencode's local HTTP server.
 // It's split out of NewLocalClient so main can build it first, wrap it in
-// LocalWithVersionHeader, and hand the result to NewLocalServerFactory —
+// WithVersionHeader, and hand the result to NewLocalServerFactory —
 // letting every dependency reach NewLocalClient through its constructor
 // instead of being patched in afterward.
 func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
@@ -51,22 +51,26 @@ func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, e
 	if err != nil {
 		return nil, err
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.FlushInterval = -1
-	base := proxy.Director
-	proxy.Director = func(r *http.Request) {
-		base(r)
-		r.Host = target.Host
-	}
-	proxy.Transport = &http.Transport{
-		ResponseHeaderTimeout: 0,
-		IdleConnTimeout:       0,
-	}
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		l.Printf("opencode proxy error for %s: %v", r.URL.Path, err)
-		http.Error(w, "opencode unreachable", http.StatusBadGateway)
-	}
-	return proxy, nil
+	return &httputil.ReverseProxy{
+		// Rewrite rather than the legacy Director, matching NewRemoteProxy:
+		// Director appends to whatever X-Forwarded-For the caller supplied,
+		// while Rewrite strips the client's forwarding headers first.
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			// opencode is addressed by its own host rather than the public
+			// name the browser used; SetURL clears Out.Host, so set it back.
+			pr.Out.Host = target.Host
+		},
+		// An explicit zero-valued Transport rather than DefaultTransport: no
+		// env-var proxying and no idle-connection timeout on a link that only
+		// ever reaches the local opencode server.
+		Transport:     &http.Transport{},
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			l.Printf("opencode proxy error for %s: %v", r.URL.Path, err)
+			http.Error(w, "opencode unreachable", http.StatusBadGateway)
+		},
+	}, nil
 }
 
 // NewLocalClient takes every dependency as a parameter rather than
@@ -90,6 +94,11 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialers Tun
 	}
 }
 
+// Run dials the tunnel and serves it until ctx is cancelled, reconnecting
+// with backoff in between. Cancellation is the expected way to stop, so Run
+// returns nil for it rather than ctx.Err() — mirroring
+// RemoteServer.ListenAndServe swallowing http.ErrServerClosed, so both
+// halves exit 0 on a clean SIGTERM instead of disagreeing about it.
 func (c *LocalClient) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialers, c.yamuxConfigs)
@@ -104,7 +113,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		c.backoff.Reset()
 
 		srv := c.servers()
-		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
+		cancelled, serveErr := serveTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
 		if cancelled {
 			break
 		}
@@ -116,29 +125,13 @@ func (c *LocalClient) Run(ctx context.Context) error {
 			break
 		}
 	}
-	return ctx.Err()
+	return nil
 }
 
 // waitToRetry sleeps for the next backoff interval, reporting false if ctx
 // is cancelled first.
 func (c *LocalClient) waitToRetry(ctx context.Context) bool {
 	return sleepCtx(ctx, c.backoff.Next())
-}
-
-// waitOrCancel waits for either ctx to be cancelled or done to fire. On
-// cancellation it calls onCancel (unblocking whatever done's producer is
-// waiting on) and then waits for done itself, so the producer's goroutine
-// never leaks; it reports true in that case. Otherwise it returns false
-// once done fires on its own.
-func waitOrCancel(ctx context.Context, done <-chan struct{}, onCancel func()) bool {
-	select {
-	case <-ctx.Done():
-		onCancel()
-		<-done
-		return true
-	case <-done:
-		return false
-	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
