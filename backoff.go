@@ -18,7 +18,13 @@ func NewBackoff(min, max time.Duration) *Backoff {
 // than on top of it, so callers can rely on b.max as a true upper bound.
 func (b *Backoff) Next() time.Duration {
 	base := b.nextBase()
-	jitter := time.Duration(rand.Int63n(int64(base) / 5))
+	// rand.Int63n panics on n<=0, and base/5 underflows to 0 for sub-5ns
+	// bases: skip jitter rather than risk it on an extreme configured value.
+	jitterMax := int64(base) / 5
+	if jitterMax <= 0 {
+		return base
+	}
+	jitter := time.Duration(rand.Int63n(jitterMax))
 	return min(base+jitter, b.max)
 }
 

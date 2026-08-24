@@ -86,8 +86,7 @@ func runLocal(ctx context.Context, cfg Config, certs CertPaths, remoteURL, serve
 	}
 	dialerFactory := NewTunnelDialerFactory(tlsConf)
 	serverFactory := NewLocalServerFactory(WithVersionHeader(LocalVersionHeader, Version, proxy))
-	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
-	tunnelFactory := NewTunnelFactory(yamuxConfigFactory)
+	tunnelFactory := NewTunnelFactoryFromConfig(cfg)
 	client := NewLocalClient(LocalOptions{
 		RemoteURL: remoteURL,
 		Logger:    logger,
@@ -100,8 +99,7 @@ func runRemote(ctx context.Context, cfg Config, certs CertPaths, addr string, re
 	if err != nil {
 		return err
 	}
-	yamuxConfigFactory := NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout)
-	tunnelFactory := NewTunnelFactory(yamuxConfigFactory)
+	tunnelFactory := NewTunnelFactoryFromConfig(cfg)
 	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger))
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)

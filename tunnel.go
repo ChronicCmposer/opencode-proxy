@@ -56,6 +56,14 @@ func NewTunnelFactory(yamuxConfigFactory YamuxConfigFactory) *TunnelFactory {
 	return &TunnelFactory{yamuxConfigFactory: yamuxConfigFactory}
 }
 
+// NewTunnelFactoryFromConfig builds a TunnelFactory from cfg's yamux
+// tunables. runLocal and runRemote both need one, built identically, so
+// main.go calls this instead of each wiring the YamuxConfigFactory step
+// itself.
+func NewTunnelFactoryFromConfig(cfg Config) *TunnelFactory {
+	return NewTunnelFactory(NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout))
+}
+
 // DialTunnel's caller owns the returned session's lifetime and must Close it.
 // dialerFactory stays a parameter rather than a TunnelFactory field: only the
 // dial side ever needs one, and storing it here would leave the accept side's
@@ -105,9 +113,7 @@ func runTunnelSession(ctx context.Context, sess *yamux.Session, run func() error
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
 	go func() { errCh <- run(); close(done) }()
-	cancelled = waitOrCancel(ctx, done, func() { sess.Close() })
-	sess.Close()
-	if cancelled {
+	if closeOnCancel(ctx, sess, done) {
 		return true, nil
 	}
 	return false, <-errCh
@@ -118,7 +124,15 @@ func runTunnelSession(ctx context.Context, sess *yamux.Session, run func() error
 // observer: it has nothing to drive, since the tunnel client is what's
 // serving.
 func waitForTunnelClose(ctx context.Context, sess *yamux.Session) (cancelled bool) {
-	cancelled = waitOrCancel(ctx, sess.CloseChan(), func() { sess.Close() })
+	return closeOnCancel(ctx, sess, sess.CloseChan())
+}
+
+// closeOnCancel waits for done to fire or ctx to be cancelled, closing sess
+// either way, and reports whether cancellation is what ended the wait.
+// runTunnelSession and waitForTunnelClose both need exactly this, against
+// different done channels.
+func closeOnCancel(ctx context.Context, sess *yamux.Session, done <-chan struct{}) bool {
+	cancelled := waitOrCancel(ctx, done, func() { sess.Close() })
 	sess.Close()
 	return cancelled
 }
