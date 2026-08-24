@@ -73,12 +73,33 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 			pr.Out.Host = pr.In.Host
 		},
 		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			// sess.Open() takes no context of its own and blocks until a
+			// stream opens or StreamOpenTimeout elapses; selecting on ctx
+			// here lets a cancelled request return immediately instead of
+			// waiting out that (deliberately generous, see config.go)
+			// timeout. The Open call itself still runs to completion in the
+			// background — yamux gives no way to abort it early — but the
+			// caller is no longer blocked on it.
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				sess := reg.Get()
 				if sess == nil {
 					return nil, fmt.Errorf("no tunnel connected")
 				}
-				return sess.Open()
+				type result struct {
+					conn net.Conn
+					err  error
+				}
+				ch := make(chan result, 1)
+				go func() {
+					conn, err := sess.Open()
+					ch <- result{conn, err}
+				}()
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case r := <-ch:
+					return r.conn, r.err
+				}
 			},
 		},
 		FlushInterval: -1,

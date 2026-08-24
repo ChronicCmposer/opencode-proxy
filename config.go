@@ -76,6 +76,27 @@ type configJSON struct {
 	TunnelPath        *string `json:"tunnel-path"`
 }
 
+// durationField names one of Config's time.Duration fields and points at it,
+// so UnmarshalJSON and validate can share a single field list instead of each
+// keeping their own — the way they used to, which let a field added to one
+// but not the other fail silently rather than loudly.
+type durationField struct {
+	name string
+	dst  *time.Duration
+}
+
+// durationFields lists c's duration fields in the same order configJSON
+// declares their string counterparts, so UnmarshalJSON can zip the two
+// together by index.
+func (c *Config) durationFields() []durationField {
+	return []durationField{
+		{"backoff-min", &c.BackoffMin},
+		{"backoff-max", &c.BackoffMax},
+		{"keepalive-interval", &c.KeepAliveInterval},
+		{"stream-open-timeout", &c.StreamOpenTimeout},
+	}
+}
+
 // UnmarshalJSON layers b's keys over whatever c already holds rather than
 // replacing it, which is what lets LoadConfig seed c with DefaultConfig first.
 // Unknown keys are an error: a typo'd key would otherwise be indistinguishable
@@ -87,20 +108,13 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 	if err := dec.Decode(&raw); err != nil {
 		return err
 	}
-	for _, f := range []struct {
-		name string
-		text *string
-		dst  *time.Duration
-	}{
-		{"backoff-min", raw.BackoffMin, &c.BackoffMin},
-		{"backoff-max", raw.BackoffMax, &c.BackoffMax},
-		{"keepalive-interval", raw.KeepAliveInterval, &c.KeepAliveInterval},
-		{"stream-open-timeout", raw.StreamOpenTimeout, &c.StreamOpenTimeout},
-	} {
-		if f.text == nil {
+	texts := []*string{raw.BackoffMin, raw.BackoffMax, raw.KeepAliveInterval, raw.StreamOpenTimeout}
+	for i, f := range c.durationFields() {
+		text := texts[i]
+		if text == nil {
 			continue
 		}
-		d, err := time.ParseDuration(*f.text)
+		d, err := time.ParseDuration(*text)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f.name, err)
 		}
@@ -116,17 +130,9 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 // reads a non-positive timeout as "disabled", not "shorter", and an inverted
 // backoff range would cap every delay below the first attempt's.
 func (c Config) validate() error {
-	for _, f := range []struct {
-		name string
-		d    time.Duration
-	}{
-		{"backoff-min", c.BackoffMin},
-		{"backoff-max", c.BackoffMax},
-		{"keepalive-interval", c.KeepAliveInterval},
-		{"stream-open-timeout", c.StreamOpenTimeout},
-	} {
-		if f.d <= 0 {
-			return fmt.Errorf("%s must be positive, got %s", f.name, f.d)
+	for _, f := range c.durationFields() {
+		if *f.dst <= 0 {
+			return fmt.Errorf("%s must be positive, got %s", f.name, *f.dst)
 		}
 	}
 	if c.BackoffMin > c.BackoffMax {
