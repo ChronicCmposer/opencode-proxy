@@ -86,8 +86,6 @@ func NewClientTLSConfig(certs CertPaths, serverName string) (*tls.Config, error)
 	}, nil
 }
 
-// leafCertOf returns state's leaf peer certificate, or nil if state carries
-// none.
 func leafCertOf(state *tls.ConnectionState) *x509.Certificate {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return nil
@@ -95,9 +93,8 @@ func leafCertOf(state *tls.ConnectionState) *x509.Certificate {
 	return state.PeerCertificates[0]
 }
 
-// GetPeerSubjectCN returns the peer leaf certificate's Subject Common Name,
-// or "<none>" when there is no peer certificate. It exists for log lines, so
-// it never fails — an unidentified peer is still worth logging.
+// GetPeerSubjectCN never fails — it exists for log lines, and an
+// unidentified peer is still worth logging.
 func GetPeerSubjectCN(state *tls.ConnectionState) string {
 	cert := leafCertOf(state)
 	if cert == nil {

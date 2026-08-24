@@ -44,7 +44,6 @@ func NewLocalServer(handler http.Handler) *http.Server {
 	return &http.Server{Handler: handler}
 }
 
-// NewLocalProxy builds the reverse proxy to opencode's local HTTP server.
 func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(opencodeURL)
 	if err != nil {

@@ -63,8 +63,6 @@ func (r *SessionRegistry) Clear(sess *yamux.Session) {
 	r.mu.Unlock()
 }
 
-// NewRemoteProxy builds the reverse proxy that forwards device requests
-// through whatever tunnel session reg currently holds.
 func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
