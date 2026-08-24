@@ -5,8 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -14,7 +12,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sync"
-	"time"
 
 	"github.com/hashicorp/yamux"
 )
@@ -133,29 +130,4 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	} else {
 		l.Printf("tunnel disconnected")
 	}
-}
-
-type RemoteServer struct {
-	srv *http.Server
-}
-
-func NewRemoteServer(addr string, tlsConf *tls.Config, handler http.Handler) *RemoteServer {
-	return &RemoteServer{srv: &http.Server{
-		Addr:      addr,
-		TLSConfig: tlsConf,
-		Handler:   handler,
-	}}
-}
-
-func (s *RemoteServer) ListenAndServe(ctx context.Context) error {
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.srv.Shutdown(shutdownCtx)
-	}()
-	if err := s.srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
 }

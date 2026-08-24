@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -130,8 +132,21 @@ func run() error {
 	}
 	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, cfg.TunnelPath, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
-	srv := NewRemoteServer(f.addr, tlsConf, handler)
-	return srv.ListenAndServe(ctx)
+	srv := &http.Server{
+		Addr:      f.addr,
+		TLSConfig: tlsConf,
+		Handler:   handler,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // WithVersionHeader sets header to version on every response. Pre-setting it

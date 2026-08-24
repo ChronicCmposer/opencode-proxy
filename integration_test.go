@@ -63,8 +63,18 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, cfg.TunnelPath, remoteLog))
-	srv := NewRemoteServer(remoteAddr, remoteTLS, remoteHandler)
-	go srv.ListenAndServe(ctx)
+	srv := &http.Server{
+		Addr:      remoteAddr,
+		TLSConfig: remoteTLS,
+		Handler:   remoteHandler,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+	go srv.ListenAndServeTLS("", "")
 	t.Cleanup(cancel)
 	waitForListener(t, remoteAddr)
 
