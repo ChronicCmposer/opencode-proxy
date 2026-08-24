@@ -112,24 +112,37 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		b.Reset()
 
 		srv := c.servers.CreateServer()
-		serveErr := make(chan error, 1)
-		go func() { serveErr <- srv.Serve(sess) }()
+		var serveErr error
+		done := make(chan struct{})
+		go func() { serveErr = srv.Serve(sess); close(done) }()
 
-		select {
-		case <-ctx.Done():
-			sess.Close()
-			<-serveErr
+		if waitOrCancel(ctx, done, func() { sess.Close() }) {
 			return ctx.Err()
-		case err := <-serveErr:
-			sess.Close()
-			if !errors.Is(err, context.Canceled) {
-				c.log.Printf("tunnel session ended: %v", err)
-			}
+		}
+		sess.Close()
+		if !errors.Is(serveErr, context.Canceled) {
+			c.log.Printf("tunnel session ended: %v", serveErr)
 		}
 
 		if !sleepCtx(ctx, b.Next()) {
 			return ctx.Err()
 		}
+	}
+}
+
+// waitOrCancel waits for either ctx to be cancelled or done to fire. On
+// cancellation it calls onCancel (unblocking whatever done's producer is
+// waiting on) and then waits for done itself, so the producer's goroutine
+// never leaks; it reports true in that case. Otherwise it returns false
+// once done fires on its own.
+func waitOrCancel(ctx context.Context, done <-chan struct{}, onCancel func()) bool {
+	select {
+	case <-ctx.Done():
+		onCancel()
+		<-done
+		return true
+	case <-done:
+		return false
 	}
 }
 

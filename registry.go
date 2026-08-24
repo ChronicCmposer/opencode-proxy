@@ -21,6 +21,12 @@ func (r *SessionRegistry) Set(sess *yamux.Session) {
 	}
 }
 
+// Get returns the current session, or nil if none is connected. The
+// returned session can still be closed by a concurrent Set/Clear right
+// after Get returns it — callers don't need to guard against that: yamux's
+// Open (and CloseChan) on an already-closed session simply fails/fires
+// immediately, which the reverse proxy's normal dial-error handling already
+// covers.
 func (r *SessionRegistry) Get() *yamux.Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()

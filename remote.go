@@ -86,11 +86,9 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	}
 	l.Printf("tunnel connected from %s", PeerName(r.TLS))
 	reg.Set(sess)
-	select {
-	case <-ctx.Done():
-		sess.Close()
+	if waitOrCancel(ctx, sess.CloseChan(), func() { sess.Close() }) {
 		l.Printf("tunnel closed on shutdown")
-	case <-sess.CloseChan():
+	} else {
 		l.Printf("tunnel disconnected")
 	}
 	reg.Clear(sess)
