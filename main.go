@@ -111,7 +111,7 @@ func run() error {
 
 	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, logger)
-	return runRemote(ctx, cfg, certs, f.addr, reg, proxy, tunnelFactory, logger)
+	return runRemote(ctx, cfg.TunnelPath, certs, f.addr, reg, proxy, tunnelFactory, logger)
 }
 
 func runLocal(ctx context.Context, certs CertPaths, remoteURL, serverName string, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, backoff *Backoff, logger *log.Logger) error {
@@ -128,12 +128,12 @@ func runLocal(ctx context.Context, certs CertPaths, remoteURL, serverName string
 	return client.Run(ctx)
 }
 
-func runRemote(ctx context.Context, cfg Config, certs CertPaths, addr string, reg *SessionRegistry, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, logger *log.Logger) error {
+func runRemote(ctx context.Context, tunnelPath string, certs CertPaths, addr string, reg *SessionRegistry, proxy *httputil.ReverseProxy, tunnelFactory *TunnelFactory, logger *log.Logger) error {
 	tlsConf, err := NewServerTLSConfig(certs)
 	if err != nil {
 		return err
 	}
-	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, cfg.TunnelPath, logger))
+	handler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteHandler(ctx, proxy, reg, tunnelFactory, tunnelPath, logger))
 	httpSrv := NewRemoteHTTPServer(addr, tlsConf, handler)
 	srv := NewRemoteServer(httpSrv)
 	return srv.ListenAndServe(ctx)

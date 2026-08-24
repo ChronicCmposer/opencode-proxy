@@ -23,6 +23,11 @@ const (
 
 var ErrWrongRole = errors.New("client certificate is not valid for this endpoint")
 
+// minTLSVersion is the floor for both server and client configs: Safari on
+// older iOS still negotiates 1.2, so anything issued for a device
+// certificate needs 1.2 to keep working.
+const minTLSVersion = tls.VersionTLS12
+
 // CertPaths groups the three PEM paths that always travel together: nothing
 // loads one without the other two, and passing them separately cost every
 // function along the wiring path three positional string parameters.
@@ -69,7 +74,7 @@ func NewServerTLSConfig(certs CertPaths) (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS12, // Safari on older iOS still negotiates 1.2.
+		MinVersion:   minTLSVersion,
 	}, nil
 }
 
