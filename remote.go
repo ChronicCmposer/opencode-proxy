@@ -1,6 +1,6 @@
 // The remote half of the proxy: a public mTLS listener that accepts the
-// home tunnel connection on TunnelPath and forwards every other request
-// through it to opencode running locally.
+// home tunnel connection on its configured tunnel path and forwards every
+// other request through it to opencode running locally.
 package main
 
 import (
@@ -46,22 +46,22 @@ func NewRemoteProxy(reg *SessionRegistry, l *log.Logger) *httputil.ReverseProxy 
 	}
 }
 
-// NewRemoteHandler splits tunnel upgrades on TunnelPath from ordinary
+// NewRemoteHandler splits tunnel upgrades on tunnelPath from ordinary
 // device requests, enforcing each side's required client-certificate role
 // before dispatch. ctx governs an accepted tunnel's lifetime: a hijacked
 // connection is invisible to http.Server.Shutdown, so without it the
 // session would only end when the process exits.
-func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, yamuxConfigFactory YamuxConfigFactory, l *log.Logger) http.Handler {
+func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *SessionRegistry, tunnelFactory *TunnelFactory, tunnelPath string, l *log.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
 
-		if r.URL.Path == TunnelPath {
+		if r.URL.Path == tunnelPath {
 			if err := VerifyPeerRole(state, OUTunnel); err != nil {
 				l.Printf("rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			acceptTunnel(ctx, w, r, reg, yamuxConfigFactory, l)
+			acceptTunnel(ctx, w, r, reg, tunnelFactory, l)
 			return
 		}
 
@@ -74,8 +74,8 @@ func NewRemoteHandler(ctx context.Context, proxy *httputil.ReverseProxy, reg *Se
 	})
 }
 
-func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, yamuxConfigFactory YamuxConfigFactory, l *log.Logger) {
-	sess, err := AcceptTunnel(w, r, yamuxConfigFactory)
+func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, tunnelFactory *TunnelFactory, l *log.Logger) {
+	sess, err := tunnelFactory.AcceptTunnel(w, r)
 	if err != nil {
 		l.Printf("tunnel accept failed: %v", err)
 		return
@@ -83,7 +83,7 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 	l.Printf("tunnel connected from %s", GetPeerSubjectCN(r.TLS))
 	reg.Set(sess)
 	defer reg.Clear(sess)
-	if awaitTunnelSession(ctx, sess) {
+	if waitForTunnelClose(ctx, sess) {
 		l.Printf("tunnel closed on shutdown")
 	} else {
 		l.Printf("tunnel disconnected")

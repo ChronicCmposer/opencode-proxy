@@ -96,7 +96,7 @@ func TestServerAndClientConfig(t *testing.T) {
 	serverCertPath := writePEM(t, dir, "server.crt", serverLeaf.CertPEM)
 	serverKeyPath := writePEM(t, dir, "server.key", serverLeaf.KeyPEM)
 
-	serverConf, err := NewServerConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath})
+	serverConf, err := NewServerTLSConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestServerAndClientConfig(t *testing.T) {
 	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
 	tunnelKeyPath := writePEM(t, dir, "tunnel.key", tunnelLeaf.KeyPEM)
 
-	clientConf, err := NewClientConfig(CertPaths{CA: caPath, Cert: tunnelCertPath, Key: tunnelKeyPath}, "127.0.0.1")
+	clientConf, err := NewClientTLSConfig(CertPaths{CA: caPath, Cert: tunnelCertPath, Key: tunnelKeyPath}, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestServerAndClientConfig(t *testing.T) {
 
 func TestServerConfigBadCAPath(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := NewServerConfig(CertPaths{CA: filepath.Join(dir, "missing.crt")}); err == nil {
+	if _, err := NewServerTLSConfig(CertPaths{CA: filepath.Join(dir, "missing.crt")}); err == nil {
 		t.Fatal("expected error for a missing CA file")
 	}
 }
@@ -158,7 +158,7 @@ func TestServerConfigMismatchedKeypairWrapsLabel(t *testing.T) {
 	certPath := writePEM(t, dir, "server.crt", leaf.CertPEM)
 	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
 
-	_, err = NewServerConfig(CertPaths{CA: caPath, Cert: certPath, Key: mismatchedKeyPath})
+	_, err = NewServerTLSConfig(CertPaths{CA: caPath, Cert: certPath, Key: mismatchedKeyPath})
 	if err == nil {
 		t.Fatal("expected error for a mismatched cert/key pair")
 	}
@@ -186,7 +186,7 @@ func TestClientConfigMismatchedKeypairWrapsLabel(t *testing.T) {
 	certPath := writePEM(t, dir, "tunnel.crt", leaf.CertPEM)
 	mismatchedKeyPath := writePEM(t, dir, "mismatched.key", otherLeaf.KeyPEM)
 
-	_, err = NewClientConfig(CertPaths{CA: caPath, Cert: certPath, Key: mismatchedKeyPath}, "")
+	_, err = NewClientTLSConfig(CertPaths{CA: caPath, Cert: certPath, Key: mismatchedKeyPath}, "")
 	if err == nil {
 		t.Fatal("expected error for a mismatched cert/key pair")
 	}

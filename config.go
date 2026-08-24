@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type Config struct {
 	// StreamOpenTimeout wants to be generous: a browser's GET /event SSE
 	// stream is expected to sit idle-but-open for a long time.
 	StreamOpenTimeout time.Duration
+	// TunnelPath is the HTTP path the remote half listens on for the tunnel
+	// upgrade; every other path is treated as a device request.
+	TunnelPath string
 }
 
 func DefaultConfig() Config {
@@ -34,6 +38,7 @@ func DefaultConfig() Config {
 		BackoffMax:        30 * time.Second,
 		KeepAliveInterval: 30 * time.Second,
 		StreamOpenTimeout: 2 * time.Minute,
+		TunnelPath:        "/_tunnel",
 	}
 }
 
@@ -68,6 +73,7 @@ type configJSON struct {
 	BackoffMax        *string `json:"backoff-max"`
 	KeepAliveInterval *string `json:"keepalive-interval"`
 	StreamOpenTimeout *string `json:"stream-open-timeout"`
+	TunnelPath        *string `json:"tunnel-path"`
 }
 
 // UnmarshalJSON layers b's keys over whatever c already holds rather than
@@ -100,6 +106,9 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 		}
 		*f.dst = d
 	}
+	if raw.TunnelPath != nil {
+		c.TunnelPath = *raw.TunnelPath
+	}
 	return nil
 }
 
@@ -122,6 +131,9 @@ func (c Config) validate() error {
 	}
 	if c.BackoffMin > c.BackoffMax {
 		return fmt.Errorf("backoff-min (%s) must not exceed backoff-max (%s)", c.BackoffMin, c.BackoffMax)
+	}
+	if !strings.HasPrefix(c.TunnelPath, "/") {
+		return fmt.Errorf("tunnel-path must start with /, got %q", c.TunnelPath)
 	}
 	return nil
 }

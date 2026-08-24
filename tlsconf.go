@@ -44,8 +44,8 @@ func LoadCAPool(caPath string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// loadPoolAndCert loads the CA pool and keypair shared by NewServerConfig and
-// NewClientConfig; label only appears in the load error.
+// loadPoolAndCert loads the CA pool and keypair shared by NewServerTLSConfig
+// and NewClientTLSConfig; label only appears in the load error.
 func loadPoolAndCert(certs CertPaths, label string) (*x509.CertPool, tls.Certificate, error) {
 	pool, err := LoadCAPool(certs.CA)
 	if err != nil {
@@ -58,9 +58,9 @@ func loadPoolAndCert(certs CertPaths, label string) (*x509.CertPool, tls.Certifi
 	return pool, cert, nil
 }
 
-// NewServerConfig verifies chain-to-CA only; per-request role checking is
+// NewServerTLSConfig verifies chain-to-CA only; per-request role checking is
 // VerifyPeerRole's job, not this.
-func NewServerConfig(certs CertPaths) (*tls.Config, error) {
+func NewServerTLSConfig(certs CertPaths) (*tls.Config, error) {
 	pool, cert, err := loadPoolAndCert(certs, "server")
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func NewServerConfig(certs CertPaths) (*tls.Config, error) {
 	}, nil
 }
 
-func NewClientConfig(certs CertPaths, serverName string) (*tls.Config, error) {
+func NewClientTLSConfig(certs CertPaths, serverName string) (*tls.Config, error) {
 	pool, cert, err := loadPoolAndCert(certs, "client")
 	if err != nil {
 		return nil, err
@@ -107,7 +107,7 @@ func GetPeerSubjectCN(state *tls.ConnectionState) string {
 }
 
 // VerifyPeerRole reports whether the peer's certificate carries the ou role,
-// assuming chain verification already happened (via NewServerConfig's
+// assuming chain verification already happened (via NewServerTLSConfig's
 // ClientAuth) — it only checks role.
 func VerifyPeerRole(state *tls.ConnectionState, ou string) error {
 	cert := leafCertOf(state)

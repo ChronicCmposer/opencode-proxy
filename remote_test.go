@@ -15,7 +15,8 @@ func newTestRemoteHandler(t *testing.T) (http.Handler, *SessionRegistry) {
 	cfg := DefaultConfig()
 	reg := NewSessionRegistry()
 	proxy := NewRemoteProxy(reg, log.Default())
-	handler := NewRemoteHandler(context.Background(), proxy, reg, NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), log.Default())
+	tunnelFactory := NewTunnelFactory(NewYamuxConfigFactory(cfg.KeepAliveInterval, cfg.StreamOpenTimeout))
+	handler := NewRemoteHandler(context.Background(), proxy, reg, tunnelFactory, cfg.TunnelPath, log.Default())
 	return handler, reg
 }
 
@@ -38,7 +39,7 @@ func TestRemoteHandlerRejectsWrongOU(t *testing.T) {
 		leaf *testLeaf
 		path string
 	}{
-		{"device cert on tunnel path", deviceLeaf, TunnelPath},
+		{"device cert on tunnel path", deviceLeaf, DefaultConfig().TunnelPath},
 		{"tunnel cert on ordinary path", tunnelLeaf, "/anything"},
 	}
 	for _, tt := range tests {
@@ -96,7 +97,7 @@ func TestRemoteHandlerFailedTunnelAcceptLeavesRegistryEmpty(t *testing.T) {
 	handler, reg := newTestRemoteHandler(t)
 	// Not a real websocket upgrade, so AcceptTunnel fails fast — which is
 	// what exercises acceptTunnel's error path.
-	req := httptest.NewRequest(http.MethodGet, TunnelPath, nil)
+	req := httptest.NewRequest(http.MethodGet, DefaultConfig().TunnelPath, nil)
 	req.TLS = stateFor(t, tunnelLeaf)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

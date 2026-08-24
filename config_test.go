@@ -32,7 +32,8 @@ func TestLoadConfigReadsEveryKey(t *testing.T) {
 	  "backoff-min": "2s",
 	  "backoff-max": "45s",
 	  "keepalive-interval": "10s",
-	  "stream-open-timeout": "5m"
+	  "stream-open-timeout": "5m",
+	  "tunnel-path": "/custom-tunnel"
 	}`)
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -43,6 +44,7 @@ func TestLoadConfigReadsEveryKey(t *testing.T) {
 		BackoffMax:        45 * time.Second,
 		KeepAliveInterval: 10 * time.Second,
 		StreamOpenTimeout: 5 * time.Minute,
+		TunnelPath:        "/custom-tunnel",
 	}
 	if cfg != want {
 		t.Errorf("LoadConfig() = %+v, want %+v", cfg, want)
@@ -76,6 +78,7 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"unparseable duration", `{"backoff-max": "30 seconds"}`, "backoff-max"},
 		{"duration as a number", `{"backoff-max": 30}`, "backoff-max"},
 		{"unknown key", `{"backoff-minimum": "1s"}`, "backoff-minimum"},
+		{"tunnel path missing leading slash", `{"tunnel-path": "tunnel"}`, "tunnel-path"},
 		{"malformed json", `{`, "parse config"},
 	}
 	for _, tt := range tests {

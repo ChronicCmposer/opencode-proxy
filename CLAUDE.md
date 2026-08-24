@@ -24,8 +24,15 @@ echoing its type: `dialerFactory TunnelDialerFactory`, `serverFactory
 LocalServerFactory`, `yamuxConfigFactory YamuxConfigFactory`. At a call site you
 should be able to tell a factory from the thing it mints without looking up the
 declaration — `serverFactory()` reads as "make a server", a bare `servers()`
-does not. This applies to `LocalClient`'s struct fields and to the parameters of
-`DialTunnel`, `AcceptTunnel`, and `NewRemoteHandler` just as much as to locals.
+does not. This applies to `LocalClient`'s struct fields just as much as to
+locals.
+
+`TunnelFactory` (tunnel.go) is a related but distinct shape: dialing and
+accepting a tunnel session are different operations, not two ways of minting
+the same `T`, so it's a struct with `DialTunnel`/`AcceptTunnel` methods rather
+than a `func() T` closure. It exists to hold the `yamuxConfigFactory` both
+methods need, so callers build one `TunnelFactory` instead of threading that
+factory through each call separately.
 
 ## Dependency injection: manual constructor injection, no framework
 
@@ -76,6 +83,12 @@ because `New` should mark construction on sight and a lowercase constructor
 hides it. Where a bare `New` would lose track of *where* the value comes from,
 name the source instead and keep the casing: `DefaultConfig`, `LoadConfig`
 (config.go).
+
+A type used only as a parameter of an already-exported constructor follows
+the constructor's casing too, even though nothing outside its file
+references the type itself: `YamuxRole` (tunnel.go) is exported solely
+because `NewYamuxSession` takes one — a lowercase `yamuxRole` next to an
+exported `New` would read as an inconsistency, not a scoping signal.
 
 ## Naming: say what a function does, not which field it touches
 

@@ -21,13 +21,13 @@ type LocalOptions struct {
 }
 
 type LocalClient struct {
-	opts               LocalOptions
-	log                *log.Logger
-	proxy              *httputil.ReverseProxy
-	dialerFactory      TunnelDialerFactory
-	serverFactory      LocalServerFactory
-	yamuxConfigFactory YamuxConfigFactory
-	backoff            *Backoff
+	opts          LocalOptions
+	log           *log.Logger
+	proxy         *httputil.ReverseProxy
+	dialerFactory TunnelDialerFactory
+	serverFactory LocalServerFactory
+	tunnelFactory *TunnelFactory
+	backoff       *Backoff
 }
 
 // LocalServerFactory builds a fresh http.Server for each reconnect: Run
@@ -64,19 +64,19 @@ func NewLocalProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseProxy, e
 	}, nil
 }
 
-func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFactory TunnelDialerFactory, serverFactory LocalServerFactory, yamuxConfigFactory YamuxConfigFactory, backoff *Backoff) *LocalClient {
+func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFactory TunnelDialerFactory, serverFactory LocalServerFactory, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
 	l := opts.Logger
 	if l == nil {
 		l = log.Default()
 	}
 	return &LocalClient{
-		opts:               opts,
-		log:                l,
-		proxy:              proxy,
-		dialerFactory:      dialerFactory,
-		serverFactory:      serverFactory,
-		yamuxConfigFactory: yamuxConfigFactory,
-		backoff:            backoff,
+		opts:          opts,
+		log:           l,
+		proxy:         proxy,
+		dialerFactory: dialerFactory,
+		serverFactory: serverFactory,
+		tunnelFactory: tunnelFactory,
+		backoff:       backoff,
 	}
 }
 
@@ -86,7 +86,7 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialerFacto
 // clean SIGTERM.
 func (c *LocalClient) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
-		sess, err := DialTunnel(ctx, c.opts.RemoteURL, c.dialerFactory, c.yamuxConfigFactory)
+		sess, err := c.tunnelFactory.DialTunnel(ctx, c.opts.RemoteURL, c.dialerFactory)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !c.waitToRetry(ctx) {
@@ -98,7 +98,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 		c.backoff.Reset()
 
 		srv := c.serverFactory()
-		cancelled, serveErr := serveTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
+		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return srv.Serve(sess) })
 		if cancelled {
 			break
 		}
