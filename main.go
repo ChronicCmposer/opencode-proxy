@@ -112,10 +112,7 @@ func run() error {
 		dialer := NewTunnelDialer(tlsConf)
 		handler := WithVersionHeader(LocalVersionHeader, Version, proxy)
 		server := NewLocalServer(handler)
-		client := NewLocalClient(LocalOptions{
-			RemoteURL: f.remoteURL,
-			Logger:    logger,
-		}, proxy, dialer, server, tunnelFactory, backoff)
+		client := NewLocalClient(f.remoteURL, logger, dialer, server, tunnelFactory, backoff)
 		return client.Run(ctx)
 	}
 

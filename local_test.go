@@ -136,7 +136,7 @@ func TestLocalClientRunStopsRetryingOnCancel(t *testing.T) {
 
 	backoff := NewBackoff(time.Hour, time.Hour) // must not elapse before cancel does
 	tunnelFactory := NewTunnelFactory(NewYamuxConfig(time.Minute, time.Minute), context.Background())
-	client := NewLocalClient(LocalOptions{RemoteURL: "ws://" + addr}, nil, &http.Client{}, nil, tunnelFactory, backoff)
+	client := NewLocalClient("ws://"+addr, nil, &http.Client{}, nil, tunnelFactory, backoff)
 
 	runLocalClientAndWait(t, client, 50*time.Millisecond)
 }
@@ -160,7 +160,7 @@ func TestLocalClientRunStopsOnCancelDuringSession(t *testing.T) {
 
 	backoff := NewBackoff(time.Hour, time.Hour)
 	server := NewLocalServer(http.NotFoundHandler())
-	client := NewLocalClient(LocalOptions{RemoteURL: remoteURL}, nil, srv.Client(), server, tunnelFactory, backoff)
+	client := NewLocalClient(remoteURL, nil, srv.Client(), server, tunnelFactory, backoff)
 
 	runLocalClientAndWait(t, client, 100*time.Millisecond)
 }

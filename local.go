@@ -16,15 +16,9 @@ import (
 
 const LocalVersionHeader = "X-Opencode-Proxy-Local-Version"
 
-type LocalOptions struct {
-	RemoteURL string
-	Logger    *log.Logger
-}
-
 type LocalClient struct {
-	opts          LocalOptions
+	remoteURL     string
 	log           *log.Logger
-	proxy         *httputil.ReverseProxy
 	dialer        *http.Client
 	server        *http.Server
 	tunnelFactory *TunnelFactory
@@ -66,15 +60,14 @@ func NewLocalReverseProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseP
 	}, nil
 }
 
-func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialer *http.Client, server *http.Server, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
-	l := opts.Logger
+func NewLocalClient(remoteURL string, logger *log.Logger, dialer *http.Client, server *http.Server, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
+	l := logger
 	if l == nil {
 		l = log.Default()
 	}
 	return &LocalClient{
-		opts:          opts,
+		remoteURL:     remoteURL,
 		log:           l,
-		proxy:         proxy,
 		dialer:        dialer,
 		server:        server,
 		tunnelFactory: tunnelFactory,
@@ -88,7 +81,7 @@ func NewLocalClient(opts LocalOptions, proxy *httputil.ReverseProxy, dialer *htt
 // clean SIGTERM.
 func (c *LocalClient) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
-		sess, err := c.tunnelFactory.DialTunnel(ctx, c.opts.RemoteURL, c.dialer)
+		sess, err := c.tunnelFactory.DialTunnel(ctx, c.remoteURL, c.dialer)
 		if err != nil {
 			c.log.Printf("tunnel dial failed: %v", err)
 			if !c.waitToRetry(ctx) {
@@ -96,7 +89,7 @@ func (c *LocalClient) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		c.log.Printf("tunnel connected to %s", c.opts.RemoteURL)
+		c.log.Printf("tunnel connected to %s", c.remoteURL)
 		connectedAt := time.Now()
 
 		cancelled, serveErr := runTunnelSession(ctx, sess, func() error { return c.server.Serve(sess) })

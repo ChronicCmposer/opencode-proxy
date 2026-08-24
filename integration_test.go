@@ -110,9 +110,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	server := NewLocalServer(WithVersionHeader(LocalVersionHeader, Version, proxy))
 	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
-	client := NewLocalClient(LocalOptions{
-		RemoteURL: "wss://" + remoteAddr + cfg.TunnelPath,
-	}, proxy, dialer, server, tunnelFactory, backoff)
+	client := NewLocalClient("wss://"+remoteAddr+cfg.TunnelPath, nil, dialer, server, tunnelFactory, backoff)
 	lctx, lcancel := context.WithCancel(context.Background())
 	t.Cleanup(lcancel)
 	go client.Run(lctx)
