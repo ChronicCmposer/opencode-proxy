@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestLoadConfigEmptyPathReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig(\"\") error = %v, want nil", err)
 	}
-	if cfg != DefaultConfig() {
+	if !reflect.DeepEqual(cfg, DefaultConfig()) {
 		t.Errorf("LoadConfig(\"\") = %+v, want %+v", cfg, DefaultConfig())
 	}
 }
@@ -56,8 +57,27 @@ func TestLoadConfigReadsEveryKey(t *testing.T) {
 		MaxRequestBytes:      1048576,
 		MaxHeaderBytes:       65536,
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("LoadConfig() = %+v, want %+v", cfg, want)
+	}
+}
+
+// The optional security knobs (tunnel CN pin, device path allowlist) parse
+// from their JSON keys and default to zero/empty when omitted.
+func TestLoadConfigSecurityKnobs(t *testing.T) {
+	path := writeConfig(t, `{"tunnel-cn": "home-mac", "allowed-path-prefixes": ["/api", "/event"]}`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.TunnelCN != "home-mac" {
+		t.Errorf("TunnelCN = %q, want %q", cfg.TunnelCN, "home-mac")
+	}
+	if !reflect.DeepEqual(cfg.AllowedPathPrefixes, []string{"/api", "/event"}) {
+		t.Errorf("AllowedPathPrefixes = %v, want [/api /event]", cfg.AllowedPathPrefixes)
+	}
+	if def := DefaultConfig(); def.TunnelCN != "" || def.AllowedPathPrefixes != nil {
+		t.Errorf("defaults should leave the security knobs empty, got %q %v", def.TunnelCN, def.AllowedPathPrefixes)
 	}
 }
 
@@ -71,7 +91,7 @@ func TestLoadConfigKeepsDefaultsForOmittedKeys(t *testing.T) {
 	}
 	want := DefaultConfig()
 	want.KeepAliveInterval = 5 * time.Second
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("LoadConfig() = %+v, want %+v", cfg, want)
 	}
 }
@@ -92,6 +112,7 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"zero concurrency", `{"max-concurrent-streams": 0}`, "max-concurrent-streams"},
 		{"negative body cap", `{"max-request-bytes": -1}`, "max-request-bytes"},
 		{"zero header cap", `{"max-header-bytes": 0}`, "max-header-bytes"},
+		{"path prefix missing leading slash", `{"allowed-path-prefixes": ["api"]}`, "allowed-path-prefixes"},
 		{"malformed json", `{`, "parse config"},
 	}
 	for _, tt := range tests {
@@ -133,7 +154,7 @@ func TestLoadConfigReturnsZeroConfigOnError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if cfg != (Config{}) {
+	if !reflect.DeepEqual(cfg, Config{}) {
 		t.Errorf("LoadConfig() = %+v on error, want the zero Config", cfg)
 	}
 }

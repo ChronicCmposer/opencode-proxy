@@ -131,6 +131,22 @@ host), and revoke the cert's serial. Add the serial (from `openssl x509
 effect at the **next handshake**, no restart or redeploy, so the lost device
 is cut off immediately without rotating the whole CA.
 
+**Pin the tunnel identity.** The remote accepts a tunnel upgrade from any cert
+carrying the tunnel OU. That leaves a takeover vector: a stolen or duplicate
+tunnel cert can register itself as the tunnel — during the reconnect window, or
+at cold start — and man-in-the-middle every device request. Set `--tunnel-cn`
+(or `"tunnel-cn"` in the config) to the home endpoint's certificate Common
+Name so **only that one enrolled identity** may register the tunnel; any other
+tunnel-role cert is refused at the upgrade. It's empty by default (OU-only),
+but a public deployment should set it.
+
+**Scope what a device can reach.** By default any device cert can request every
+opencode path, so a single stolen cert has the full code-execution surface as
+its blast radius. Set `"allowed-path-prefixes"` (e.g. `["/api", "/event"]`) to
+refuse any device request outside those path prefixes with a 403 before it ever
+reaches the tunnel. Empty allows everything (the backward-compatible default);
+narrowing it is defense in depth that pairs with fast revocation above.
+
 **Keep `pki/out/ca.key` off any machine you don't fully trust.** It's the
 root of everything reachable through the tunnel.
 

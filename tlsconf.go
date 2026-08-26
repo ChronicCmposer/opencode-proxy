@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -282,14 +283,27 @@ func leafCertOf(state *tls.ConnectionState) *x509.Certificate {
 	return state.PeerCertificates[0]
 }
 
+// sanitizeForLog renders s safe to interpolate into a single log line.
+// Certificate Subject fields (CN, OU) are carried on a CA-signed cert, but
+// their contents are still attacker-influenced: a cert whose CN embeds a
+// newline or other control character could otherwise forge or split log
+// entries (and any log-driven alerting built on top). strconv.Quote escapes
+// every control character and wraps the value in quotes, collapsing it to one
+// unambiguous token.
+func sanitizeForLog(s string) string {
+	return strconv.Quote(s)
+}
+
 // GetPeerSubjectCN never fails — it exists for log lines, and an
-// unidentified peer is still worth logging.
+// unidentified peer is still worth logging. The CN is quoted and
+// control-character-escaped (sanitizeForLog) since it comes off the peer's
+// certificate and feeds straight into log output.
 func GetPeerSubjectCN(state *tls.ConnectionState) string {
 	cert := leafCertOf(state)
 	if cert == nil {
 		return "<none>"
 	}
-	return cert.Subject.CommonName
+	return sanitizeForLog(cert.Subject.CommonName)
 }
 
 // VerifyPeerRole reports whether the peer's certificate carries the ou role,
@@ -301,7 +315,28 @@ func VerifyPeerRole(state *tls.ConnectionState, ou string) error {
 		return ErrWrongRole
 	}
 	if !slices.Contains(cert.Subject.OrganizationalUnit, ou) {
-		return fmt.Errorf("%w: have %v, need %q", ErrWrongRole, cert.Subject.OrganizationalUnit, ou)
+		// %q on the OU slice quotes each element, escaping any control
+		// character a malicious-but-CA-signed cert might embed to forge the
+		// log line this error is printed into.
+		return fmt.Errorf("%w: have %q, need %q", ErrWrongRole, cert.Subject.OrganizationalUnit, ou)
+	}
+	return nil
+}
+
+// VerifyPeerCN reports whether the peer leaf's Common Name equals cn. It pins
+// the tunnel endpoint's identity beyond its role: VerifyPeerRole proves a peer
+// holds *a* tunnel-role certificate, but any holder of any such cert would
+// pass it and could then seize the tunnel registry and man-in-the-middle every
+// device request (see SessionRegistry.Set). Pinning the CN narrows that to the
+// single enrolled home endpoint. Chain verification is assumed already done
+// (NewServerTLSConfig's ClientAuth); this only checks identity.
+func VerifyPeerCN(state *tls.ConnectionState, cn string) error {
+	cert := leafCertOf(state)
+	if cert == nil {
+		return ErrWrongRole
+	}
+	if cert.Subject.CommonName != cn {
+		return fmt.Errorf("%w: tunnel CN %q is not the pinned %q", ErrWrongRole, cert.Subject.CommonName, cn)
 	}
 	return nil
 }

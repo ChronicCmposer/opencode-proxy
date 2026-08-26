@@ -53,6 +53,15 @@ type Config struct {
 	// MaxHeaderBytes caps request header size on both halves' http.Servers,
 	// making Go's implicit 1MB default explicit and tunable.
 	MaxHeaderBytes int
+	// TunnelCN, when non-empty, pins the Common Name of the tunnel endpoint's
+	// certificate: the remote accepts a tunnel upgrade only from that one
+	// enrolled home endpoint, not from any holder of any tunnel-role cert.
+	// Empty (the default) keeps the OU-only check.
+	TunnelCN string
+	// AllowedPathPrefixes, when non-empty, restricts device requests to paths
+	// under one of these prefixes; every other path is refused with 403. Empty
+	// (the default) allows every path.
+	AllowedPathPrefixes []string
 }
 
 func DefaultConfig() Config {
@@ -109,6 +118,9 @@ type configJSON struct {
 	MaxConcurrentStreams *int   `json:"max-concurrent-streams"`
 	MaxRequestBytes      *int64 `json:"max-request-bytes"`
 	MaxHeaderBytes       *int   `json:"max-header-bytes"`
+
+	TunnelCN            *string   `json:"tunnel-cn"`
+	AllowedPathPrefixes *[]string `json:"allowed-path-prefixes"`
 }
 
 // durationField pairs one of Config's time.Duration fields with its JSON
@@ -169,6 +181,12 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 	if raw.MaxHeaderBytes != nil {
 		c.MaxHeaderBytes = *raw.MaxHeaderBytes
 	}
+	if raw.TunnelCN != nil {
+		c.TunnelCN = *raw.TunnelCN
+	}
+	if raw.AllowedPathPrefixes != nil {
+		c.AllowedPathPrefixes = *raw.AllowedPathPrefixes
+	}
 	return nil
 }
 
@@ -200,6 +218,14 @@ func (c Config) validate() error {
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive, got %d", f.name, f.v)
+		}
+	}
+	// A path allowlist entry that doesn't start with "/" can never match an
+	// incoming request path, which would silently reject everything under it —
+	// the same fail-quiet trap as tunnel-path, so reject it loudly.
+	for _, p := range c.AllowedPathPrefixes {
+		if !strings.HasPrefix(p, "/") {
+			return fmt.Errorf("allowed-path-prefixes entries must start with /, got %q", p)
 		}
 	}
 	return nil

@@ -38,7 +38,8 @@ type flags struct {
 
 	remoteURL, opencodeURL, serverName string
 
-	addr string
+	addr     string
+	tunnelCN string
 }
 
 func parseFlags() (*flags, error) {
@@ -58,6 +59,7 @@ func parseFlags() (*flags, error) {
 	serverName := flag.String("server-name", "", "--local: TLS server name to verify on the remote (defaults to the host in --remote-url)")
 
 	addr := flag.String("addr", ":443", "--remote: address to listen on")
+	tunnelCN := flag.String("tunnel-cn", "", "--remote: if set, pin the tunnel endpoint certificate's Common Name; only this identity may register the tunnel (overrides config tunnel-cn)")
 
 	flag.Parse()
 
@@ -82,6 +84,7 @@ func parseFlags() (*flags, error) {
 		opencodeURL: *opencodeURL,
 		serverName:  *serverName,
 		addr:        *addr,
+		tunnelCN:    *tunnelCN,
 	}, nil
 }
 
@@ -149,7 +152,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, cfg.TunnelPath, cfg.MaxConcurrentStreams, cfg.MaxRequestBytes, logger)
+	// The --tunnel-cn flag, when given, overrides the config file's value: an
+	// operator pinning the tunnel identity at the command line shouldn't have
+	// to also edit the config.
+	tunnelCN := cfg.TunnelCN
+	if f.tunnelCN != "" {
+		tunnelCN = f.tunnelCN
+	}
+	policy := RemoteProxyPolicy{
+		TunnelPath:           cfg.TunnelPath,
+		MaxConcurrentStreams: cfg.MaxConcurrentStreams,
+		MaxRequestBytes:      cfg.MaxRequestBytes,
+		TunnelCN:             tunnelCN,
+		AllowedPathPrefixes:  cfg.AllowedPathPrefixes,
+	}
+	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, policy, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
 	// ReadHeaderTimeout bounds the slow-header (Slowloris) window on a
 	// listener that faces the public internet. No ReadTimeout/WriteTimeout:

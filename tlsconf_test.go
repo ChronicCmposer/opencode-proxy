@@ -64,6 +64,45 @@ func TestVerifyPeerRoleNilState(t *testing.T) {
 	}
 }
 
+// V2: VerifyPeerCN accepts only the pinned identity and rejects any other CN
+// (and a nil state), so tunnel-role alone can't seize the registry.
+func TestVerifyPeerCN(t *testing.T) {
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := ca.issueTunnel(t, "home-mac")
+	imposter := ca.issueTunnel(t, "attacker-mac")
+
+	if err := VerifyPeerCN(stateFor(t, home), "home-mac"); err != nil {
+		t.Fatalf("VerifyPeerCN() for the pinned CN error = %v, want nil", err)
+	}
+	if err := VerifyPeerCN(stateFor(t, imposter), "home-mac"); err == nil {
+		t.Fatal("VerifyPeerCN() for a non-pinned CN error = nil, want an error")
+	}
+	if err := VerifyPeerCN(nil, "home-mac"); err == nil {
+		t.Fatal("VerifyPeerCN() for a nil state error = nil, want an error")
+	}
+}
+
+// V4: a CN carrying a newline must not survive into a log line intact —
+// GetPeerSubjectCN escapes control characters so a malicious-but-CA-signed
+// cert can't forge or split log entries.
+func TestGetPeerSubjectCNSanitizesControlChars(t *testing.T) {
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := ca.issueDevice(t, "phone\nFATAL forged log line")
+	got := GetPeerSubjectCN(stateFor(t, leaf))
+	if strings.ContainsAny(got, "\n\r") {
+		t.Fatalf("GetPeerSubjectCN() = %q, still contains a raw control character", got)
+	}
+	if !strings.Contains(got, "forged log line") {
+		t.Fatalf("GetPeerSubjectCN() = %q, want the escaped CN content preserved", got)
+	}
+}
+
 func writePEM(t *testing.T, dir, name string, pem []byte) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

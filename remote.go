@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/yamux"
@@ -68,19 +69,49 @@ func (r *SessionRegistry) Clear(sess *yamux.Session) {
 	r.mu.Unlock()
 }
 
-// NewRemoteReverseProxy splits tunnel upgrades on tunnelPath from ordinary
-// device requests, enforcing each side's required client-certificate role
-// before dispatch; non-tunnel requests are forwarded through the reverse
-// proxy it builds internally. ctx governs an accepted tunnel's lifetime: a
-// hijacked connection is invisible to http.Server.Shutdown, so without it
-// the session would only end when the process exits.
-func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, tunnelPath string, maxConcurrent int, maxRequestBytes int64, l *log.Logger) http.Handler {
+// RemoteProxyPolicy groups the per-request security and resource controls the
+// remote reverse proxy enforces. They travel together the way CertPaths does:
+// bundling them keeps NewRemoteReverseProxy a two-collaborator constructor
+// instead of a growing list of positional knobs where a caller could transpose
+// two same-typed arguments unnoticed.
+type RemoteProxyPolicy struct {
+	// TunnelPath is the one HTTP path treated as a tunnel upgrade; every other
+	// path is a device request.
+	TunnelPath string
+	// MaxConcurrentStreams caps device requests in flight through the single
+	// tunnel; the (MaxConcurrentStreams+1)th is refused with 503 rather than
+	// queued.
+	MaxConcurrentStreams int
+	// MaxRequestBytes caps each device request body.
+	MaxRequestBytes int64
+	// TunnelCN, when non-empty, pins the tunnel endpoint's certificate Common
+	// Name: an OU-tunnel cert whose CN differs is refused, closing the
+	// tunnel-takeover vector where any holder of any tunnel-role cert could
+	// seize the registry. Empty keeps the OU-only check (any tunnel-role cert
+	// is accepted) for deployments that haven't enrolled a pinned identity.
+	TunnelCN string
+	// AllowedPathPrefixes, when non-empty, restricts device requests to paths
+	// under one of these prefixes; every other path is refused with 403 before
+	// it ever reaches the tunnel. Empty allows every path — the
+	// backward-compatible default — but a deployment can narrow the blast
+	// radius of a stolen device cert by listing only the paths it needs.
+	AllowedPathPrefixes []string
+}
+
+// NewRemoteReverseProxy splits tunnel upgrades on policy.TunnelPath from
+// ordinary device requests, enforcing each side's required client-certificate
+// role (and, when configured, the pinned tunnel CN and device path allowlist)
+// before dispatch; non-tunnel requests are forwarded through the reverse proxy
+// it builds internally. ctx governs an accepted tunnel's lifetime: a hijacked
+// connection is invisible to http.Server.Shutdown, so without it the session
+// would only end when the process exits.
+func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, policy RemoteProxyPolicy, l *log.Logger) http.Handler {
 	// A buffered channel used as a counting semaphore: a device request must
 	// take a slot before it opens a yamux stream, so no more than
-	// maxConcurrent are ever in flight through the one tunnel. A full channel
-	// means "saturated" — the request is turned away with 503 rather than
-	// queued, so a flood fails fast instead of piling up goroutines.
-	sem := make(chan struct{}, maxConcurrent)
+	// MaxConcurrentStreams are ever in flight through the one tunnel. A full
+	// channel means "saturated" — the request is turned away with 503 rather
+	// than queued, so a flood fails fast instead of piling up goroutines.
+	sem := make(chan struct{}, policy.MaxConcurrentStreams)
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// opencode.tunnel is never resolved: DialContext below ignores
@@ -111,11 +142,21 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := r.TLS
 
-		if r.URL.Path == tunnelPath {
+		if r.URL.Path == policy.TunnelPath {
 			if err := VerifyPeerRole(state, OUTunnel); err != nil {
 				l.Printf("rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
+			}
+			// When a tunnel CN is pinned, role alone isn't enough: only the one
+			// enrolled home endpoint may register as the tunnel, so a stolen or
+			// duplicate tunnel-role cert can't take over the registry.
+			if policy.TunnelCN != "" {
+				if err := VerifyPeerCN(state, policy.TunnelCN); err != nil {
+					l.Printf("rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
 			}
 			acceptTunnel(ctx, w, r, reg, tunnelFactory, l)
 			return
@@ -127,11 +168,20 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			return
 		}
 
+		// A configured path allowlist bounds what a device cert can reach: a
+		// request outside it is refused here, before a tunnel stream is ever
+		// opened. An empty allowlist permits everything (the default).
+		if !pathAllowed(policy.AllowedPathPrefixes, r.URL.Path) {
+			l.Printf("rejected request from %s: path %q is not on the allowlist", GetPeerSubjectCN(state), r.URL.Path)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
 		select {
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
 		default:
-			l.Printf("rejected request from %s: %d concurrent requests already in flight", GetPeerSubjectCN(state), maxConcurrent)
+			l.Printf("rejected request from %s: %d concurrent requests already in flight", GetPeerSubjectCN(state), policy.MaxConcurrentStreams)
 			http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
 			return
 		}
@@ -139,9 +189,26 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 		// Cap the request body so a single device can't stream an unbounded
 		// upload through the tunnel. Only the body is bounded; the SSE
 		// response stream back the other way is untouched.
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, policy.MaxRequestBytes)
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+// pathAllowed reports whether path is permitted by prefixes. An empty
+// prefixes slice allows every path (allowlisting is opt-in). A path matches
+// when it equals a prefix or sits beneath it — "/api" allows "/api" and
+// "/api/foo" but not "/apiary", so a prefix names a path segment boundary
+// rather than a raw string prefix.
+func pathAllowed(prefixes []string, path string) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, p := range prefixes {
+		if path == p || strings.HasPrefix(path, strings.TrimSuffix(p, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, reg *SessionRegistry, tunnelFactory *TunnelFactory, l *log.Logger) {
