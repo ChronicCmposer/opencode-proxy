@@ -19,11 +19,15 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-if [[ $# -ne 5 ]]; then
-  echo "usage: $0 <stack-name> <domain-name> <key-pair-name> <admin-cidr> <repo-ref>" >&2
+if [[ $# -lt 5 || $# -gt 6 ]]; then
+  echo "usage: $0 <stack-name> <domain-name> <key-pair-name> <admin-cidr> <repo-ref> [tunnel-cn]" >&2
   exit 1
 fi
 stack_name="$1" domain="$2" key_name="$3" admin_cidr="$4" repo_ref="$5"
+# The CN of the tunnel certificate the home Mac uses (pki/issue-tunnel.sh's
+# default is "home-mac"); the remote pins the tunnel upgrade to it. Override
+# only if you issued the tunnel cert with a different CN.
+tunnel_cn="${6:-home-mac}"
 
 # Resolve the ref to the full 40-char commit SHA it points at right now. The
 # stack pins that SHA (RepoRef's AllowedPattern rejects anything else), so what
@@ -48,6 +52,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
       DomainName="$domain" \
+      TunnelCN="$tunnel_cn" \
       KeyName="$key_name" \
       AdminCidr="$admin_cidr" \
       RepoRef="$repo_sha" \

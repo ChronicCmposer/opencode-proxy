@@ -3,7 +3,8 @@
 //
 //	opencode-proxy --local  --remote-url wss://code.example.com/_tunnel \
 //	                --ca ca.crt --cert tunnel.crt --key tunnel.key
-//	opencode-proxy --remote --addr :443 \
+//	opencode-proxy --remote --addr :443 --tunnel-cn home-mac \
+//	                --config config.json \
 //	                --ca ca.crt --cert server.crt --key server.key
 package main
 
@@ -59,7 +60,7 @@ func parseFlags() (*flags, error) {
 	serverName := flag.String("server-name", "", "--local: TLS server name to verify on the remote (defaults to the host in --remote-url)")
 
 	addr := flag.String("addr", ":443", "--remote: address to listen on")
-	tunnelCN := flag.String("tunnel-cn", "", "--remote: if set, pin the tunnel endpoint certificate's Common Name; only this identity may register the tunnel (overrides config tunnel-cn)")
+	tunnelCN := flag.String("tunnel-cn", "", "--remote (required): pin the tunnel endpoint certificate's Common Name; only this identity may register the tunnel (overrides config tunnel-cn)")
 
 	flag.Parse()
 
@@ -143,15 +144,6 @@ func run() error {
 		return client.Run(ctx)
 	}
 
-	reg := NewSessionRegistry()
-	revocation, err := NewRevocationList(f.revokedPath)
-	if err != nil {
-		return err
-	}
-	tlsConf, err := NewServerTLSConfig(certs, revocation)
-	if err != nil {
-		return err
-	}
 	// The --tunnel-cn flag, when given, overrides the config file's value: an
 	// operator pinning the tunnel identity at the command line shouldn't have
 	// to also edit the config.
@@ -165,6 +157,22 @@ func run() error {
 		MaxRequestBytes:      cfg.MaxRequestBytes,
 		TunnelCN:             tunnelCN,
 		AllowedPathPrefixes:  cfg.AllowedPathPrefixes,
+	}
+	// Fail fast on a default-deny misconfiguration before touching cert files
+	// or opening a listener, so the error is about the policy, not whatever I/O
+	// happened to come first.
+	if err := requireRemotePolicy(policy); err != nil {
+		return err
+	}
+
+	reg := NewSessionRegistry()
+	revocation, err := NewRevocationList(f.revokedPath)
+	if err != nil {
+		return err
+	}
+	tlsConf, err := NewServerTLSConfig(certs, revocation)
+	if err != nil {
+		return err
 	}
 	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, policy, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
@@ -189,6 +197,21 @@ func run() error {
 	}()
 	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+// requireRemotePolicy enforces the remote half's default-deny posture, checked
+// loudly at startup rather than silently per request: the remote faces the
+// public internet, so it refuses to run in a configuration that would leave the
+// tunnel takeable or the device surface unbounded. An operator sets a concrete
+// value once instead of inheriting a permissive default they never chose.
+func requireRemotePolicy(policy RemoteProxyPolicy) error {
+	if policy.TunnelCN == "" {
+		return fmt.Errorf("--remote requires a pinned tunnel identity: set --tunnel-cn (or \"tunnel-cn\" in --config) to the tunnel certificate's Common Name")
+	}
+	if len(policy.AllowedPathPrefixes) == 0 {
+		return fmt.Errorf("--remote requires a device path allowlist: set \"allowed-path-prefixes\" in --config (use [\"/\"] to allow every path deliberately)")
 	}
 	return nil
 }

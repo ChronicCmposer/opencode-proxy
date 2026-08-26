@@ -8,6 +8,5 @@
   "max-concurrent-streams": 256,
   "max-request-bytes": 33554432,
   "max-header-bytes": 1048576,
-  "tunnel-cn": "",
-  "allowed-path-prefixes": []
+  "allowed-path-prefixes": ["/"]
 }

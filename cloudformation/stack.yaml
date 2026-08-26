@@ -46,6 +46,16 @@ Parameters:
   DomainName:
     Type: String
     Description: The DNS name you will point at the stack's Elastic IP (informational; used only in tags/outputs).
+  TunnelCN:
+    Type: String
+    Default: home-mac
+    AllowedPattern: ".+"
+    ConstraintDescription: TunnelCN must not be empty — the remote refuses to start without a pinned tunnel identity.
+    Description: >
+      Common Name of the home tunnel certificate — must match the CN passed to
+      pki/issue-tunnel.sh (its default is "home-mac"). The remote pins the
+      tunnel upgrade to this one identity, so only the enrolled home endpoint
+      can register the tunnel; any other tunnel-role cert is refused.
   CertParamPrefix:
     Type: String
     Default: /opencode-proxy/server
@@ -249,11 +259,15 @@ Resources:
 
           cat > /etc/opencode-proxy/remote.env <<ENV
           IMAGE_REF=${ImageRef}
+          TUNNEL_CN=${TunnelCN}
           ENV
 
           # Shipped from the repo rather than written inline so the defaults
-          # have one source of truth. Every key is optional — delete one and
-          # the binary's built-in default applies.
+          # have one source of truth. Most keys are optional — delete one and
+          # the binary's built-in default applies — except allowed-path-prefixes,
+          # which the --remote half requires (default-deny); the shipped ["/"]
+          # allows every path deliberately and should be narrowed to opencode's
+          # actual surface where practical.
           install -m 644 /tmp/opencode-proxy-src/config.example.json /etc/opencode-proxy/config.json
 
           install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy.service /etc/systemd/system/opencode-proxy.service
