@@ -121,6 +121,79 @@ func TestRemoteHandlerPathAllowlist(t *testing.T) {
 	}
 }
 
+// V1: a device request whose path isn't already normalized is refused with 400
+// before the allowlist or the tunnel ever sees it, so an "/api/../admin" trick
+// can't walk back above an allowed prefix once opencode resolves it.
+func TestRemoteHandlerRejectsNonNormalizedPath(t *testing.T) {
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceLeaf := ca.issueDevice(t, "phone")
+
+	tests := []struct {
+		name string
+		path string
+		want int
+	}{
+		{"dot-dot escapes the prefix", "/api/../admin", http.StatusBadRequest},
+		{"dot-dot at the root", "/../admin", http.StatusBadRequest},
+		{"single-dot segment", "/api/./session", http.StatusBadRequest},
+		{"double slash", "//api", http.StatusBadRequest},
+		{"trailing slash is non-canonical", "/api/", http.StatusBadRequest},
+		{"clean allowed path still passes to 503", "/api/session", http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, _ := newTestRemoteHandlerWithPolicy(t, RemoteProxyPolicy{AllowedPathPrefixes: []string{"/api"}})
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req.TLS = stateFor(t, deviceLeaf)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("path %q: status = %d, want %d", tt.path, rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+// V3: the per-certificate limiter caps one identity at its sub-cap and frees a
+// slot on release, keeping the map to only currently-active certs.
+func TestPerCertLimiter(t *testing.T) {
+	p := newPerCertLimiter(2)
+	if !p.acquire("a") || !p.acquire("a") {
+		t.Fatal("first two acquires for a serial should succeed")
+	}
+	if p.acquire("a") {
+		t.Fatal("third acquire past the cap should be refused")
+	}
+	if !p.acquire("b") {
+		t.Fatal("a different serial has its own budget")
+	}
+	p.release("a")
+	if !p.acquire("a") {
+		t.Fatal("a freed slot should be reusable")
+	}
+	// Draining a serial to zero drops it from the map rather than leaving a
+	// zero-valued entry to accumulate over the process lifetime.
+	p.release("a")
+	p.release("a")
+	p.mu.Lock()
+	_, tracked := p.inUse["a"]
+	p.mu.Unlock()
+	if tracked {
+		t.Fatal("a serial with no in-flight requests should not stay in the map")
+	}
+
+	// A non-positive cap disables the limiter entirely (zero-means-off).
+	off := newPerCertLimiter(0)
+	for i := 0; i < 1000; i++ {
+		if !off.acquire("x") {
+			t.Fatal("a zero cap should never refuse")
+		}
+	}
+}
+
 func TestRemoteHandlerRejectsNoClientCert(t *testing.T) {
 	handler, _ := newTestRemoteHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/anything", nil)

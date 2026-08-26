@@ -22,15 +22,28 @@ issue_leaf "$name" "$name" "$OU_DEVICE" "clientAuth" "" 30
 key="$OUT_DIR/$name.key"
 crt="$OUT_DIR/$name.crt"
 p12="$OUT_DIR/$name.p12"
-p12pass_file="$OUT_DIR/$name.p12.password"
 mobileconfig="$OUT_DIR/$name.mobileconfig"
+
+# The p12 password is the highest-value secret this script mints. It is never
+# written to its own sidecar file (the old <name>.p12.password lingered in
+# pki/out/ as a plaintext credential): it lives only in this shell and, because
+# Apple's profile format requires it, inside the .mobileconfig. The intermediate
+# .p12 is an input to the profile, not a deliverable, so it's shredded on exit —
+# a normal EXIT after the profile is built, or an early one on error — leaving
+# only the .mobileconfig (itself a secret) behind. shred is best-effort:
+# fall back to rm where it isn't available (e.g. macOS).
+shred_or_rm() {
+  for f in "$@"; do
+    [[ -e "$f" ]] || continue
+    shred -u "$f" 2>/dev/null || rm -f "$f"
+  done
+}
+trap 'shred_or_rm "$p12"' EXIT
 
 p12pass="$(openssl rand -base64 18)"
 openssl pkcs12 -export -inkey "$key" -in "$crt" -certfile "$CA_CERT" \
   -name "$name" -passout "pass:$p12pass" -out "$p12"
-echo -n "$p12pass" > "$p12pass_file"
-chmod 600 "$p12" "$p12pass_file"
-echo "issued: $p12 (password in $p12pass_file — install once, then delete the password file)"
+chmod 600 "$p12"
 
 gen_uuid() {
   if command -v uuidgen >/dev/null 2>&1; then

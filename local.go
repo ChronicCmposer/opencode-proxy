@@ -47,6 +47,33 @@ func NewLocalReverseProxy(opencodeURL string, l *log.Logger) (*httputil.ReverseP
 	}, nil
 }
 
+// WithLocalRequestLimits enforces the home endpoint's own request floor,
+// independent of the remote. It caps every request body at maxRequestBytes and
+// refuses a non-normalized path outright; when allowedPrefixes is non-empty it
+// also enforces the same path allowlist the remote does. This is
+// defense-in-depth: the remote already applies these controls, but the home
+// opencode (filesystem + shell access) shouldn't rely solely on a cloud host it
+// doesn't control — if the remote is compromised, misconfigured, or built with
+// an empty tunnel-CN pin, the home still enforces its own floor. The body cap
+// is always on (it has a safe default); the allowlist stays opt-in so a
+// single-tenant setup that never configured one isn't broken.
+func WithLocalRequestLimits(maxRequestBytes int64, allowedPrefixes []string, l *log.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !pathIsNormalized(r.URL.Path) {
+			l.Printf("local: rejected non-normalized path %q", r.URL.Path)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !pathAllowed(allowedPrefixes, r.URL.Path) {
+			l.Printf("local: rejected path %q not on the allowlist", r.URL.Path)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func NewLocalClient(remoteURL string, logger *log.Logger, dialer *http.Client, server *http.Server, tunnelFactory *TunnelFactory, backoff *Backoff) *LocalClient {
 	l := logger
 	if l == nil {

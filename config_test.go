@@ -81,6 +81,30 @@ func TestLoadConfigSecurityKnobs(t *testing.T) {
 	}
 }
 
+// max-stream-duration and max-streams-per-cert both take 0 to mean "off", so
+// zero must load fine while a real value round-trips.
+func TestLoadConfigStreamBounds(t *testing.T) {
+	path := writeConfig(t, `{"max-stream-duration": "1h", "max-streams-per-cert": 64}`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.MaxStreamDuration != time.Hour {
+		t.Errorf("MaxStreamDuration = %s, want 1h", cfg.MaxStreamDuration)
+	}
+	if cfg.MaxStreamsPerCert != 64 {
+		t.Errorf("MaxStreamsPerCert = %d, want 64", cfg.MaxStreamsPerCert)
+	}
+	if def := DefaultConfig(); def.MaxStreamDuration != 0 || def.MaxStreamsPerCert != 0 {
+		t.Errorf("defaults should leave the stream bounds off, got %s %d", def.MaxStreamDuration, def.MaxStreamsPerCert)
+	}
+	// Zero is a valid, explicit "unbounded" — it must not be rejected as the
+	// non-positive durations/caps are.
+	if _, err := LoadConfig(writeConfig(t, `{"max-stream-duration": "0s", "max-streams-per-cert": 0}`)); err != nil {
+		t.Fatalf("LoadConfig() error = %v, want nil for explicit zero bounds", err)
+	}
+}
+
 // A partial file is the common case — an operator tuning one knob shouldn't
 // have to restate the rest.
 func TestLoadConfigKeepsDefaultsForOmittedKeys(t *testing.T) {
@@ -113,6 +137,8 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"negative body cap", `{"max-request-bytes": -1}`, "max-request-bytes"},
 		{"zero header cap", `{"max-header-bytes": 0}`, "max-header-bytes"},
 		{"path prefix missing leading slash", `{"allowed-path-prefixes": ["api"]}`, "allowed-path-prefixes"},
+		{"negative stream duration", `{"max-stream-duration": "-1s"}`, "max-stream-duration"},
+		{"negative per-cert cap", `{"max-streams-per-cert": -1}`, "max-streams-per-cert"},
 		{"malformed json", `{`, "parse config"},
 	}
 	for _, tt := range tests {

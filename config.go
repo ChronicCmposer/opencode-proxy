@@ -62,6 +62,17 @@ type Config struct {
 	// under one of these prefixes; every other path is refused with 403. Empty
 	// (the default) allows every path.
 	AllowedPathPrefixes []string
+	// MaxStreamDuration caps how long a single device request (SSE response
+	// included) may stay open before the remote cancels it and recycles the
+	// tunnel stream, so an otherwise-infinite GET /event subscription can't pin
+	// a slot — or outlive its cert's revocation — forever. Zero (the default)
+	// leaves stream lifetime unbounded, so normal long polls are untouched.
+	MaxStreamDuration time.Duration
+	// MaxStreamsPerCert caps how many device requests one certificate may hold
+	// in flight at once, so a single stolen or misbehaving cert can't consume
+	// the whole MaxConcurrentStreams budget and starve every other device. Zero
+	// (the default) applies no per-certificate limit.
+	MaxStreamsPerCert int
 }
 
 func DefaultConfig() Config {
@@ -121,6 +132,9 @@ type configJSON struct {
 
 	TunnelCN            *string   `json:"tunnel-cn"`
 	AllowedPathPrefixes *[]string `json:"allowed-path-prefixes"`
+
+	MaxStreamDuration *string `json:"max-stream-duration"`
+	MaxStreamsPerCert *int    `json:"max-streams-per-cert"`
 }
 
 // durationField pairs one of Config's time.Duration fields with its JSON
@@ -187,6 +201,19 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 	if raw.AllowedPathPrefixes != nil {
 		c.AllowedPathPrefixes = *raw.AllowedPathPrefixes
 	}
+	// Parsed here rather than via durationFields: those all require a positive
+	// value, but max-stream-duration takes 0 to mean "unbounded", so it can't
+	// share that positivity check.
+	if raw.MaxStreamDuration != nil {
+		d, err := time.ParseDuration(*raw.MaxStreamDuration)
+		if err != nil {
+			return fmt.Errorf("max-stream-duration: %w", err)
+		}
+		c.MaxStreamDuration = d
+	}
+	if raw.MaxStreamsPerCert != nil {
+		c.MaxStreamsPerCert = *raw.MaxStreamsPerCert
+	}
 	return nil
 }
 
@@ -219,6 +246,15 @@ func (c Config) validate() error {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive, got %d", f.name, f.v)
 		}
+	}
+	// Both take 0 to mean "unbounded"/"no per-cert limit", so a negative value
+	// is the only misconfiguration to reject — it would read as an absurd
+	// already-expired deadline or an always-refusing cap rather than "off".
+	if c.MaxStreamDuration < 0 {
+		return fmt.Errorf("max-stream-duration must not be negative, got %s", c.MaxStreamDuration)
+	}
+	if c.MaxStreamsPerCert < 0 {
+		return fmt.Errorf("max-streams-per-cert must not be negative, got %d", c.MaxStreamsPerCert)
 	}
 	// A path allowlist entry that doesn't start with "/" can never match an
 	// incoming request path, which would silently reject everything under it —

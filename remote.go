@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 )
@@ -136,6 +138,62 @@ type RemoteProxyPolicy struct {
 	// backward-compatible default — but a deployment can narrow the blast
 	// radius of a stolen device cert by listing only the paths it needs.
 	AllowedPathPrefixes []string
+	// MaxStreamDuration, when positive, caps how long a single device request
+	// (including its streamed SSE response) may stay open before its context is
+	// cancelled and the tunnel stream recycled. It bounds the otherwise-infinite
+	// GET /event subscription so a revoked or misbehaving cert can't pin a slot
+	// forever. Zero (the default) leaves stream lifetime unbounded.
+	MaxStreamDuration time.Duration
+	// MaxStreamsPerCert, when positive, caps how many device requests one
+	// certificate (keyed by serial) may hold in flight at once, refused with 503
+	// past the cap before it takes a global MaxConcurrentStreams slot. Without
+	// it a single cert could open MaxConcurrentStreams long-lived SSE streams and
+	// starve every other device; the sub-cap keeps one identity to a fraction of
+	// the shared budget. Zero (the default) applies no per-cert limit.
+	MaxStreamsPerCert int
+}
+
+// perCertLimiter counts in-flight device requests per certificate serial so no
+// single identity can hold more than a fraction of the shared stream budget. A
+// serial's counter is deleted once it drops to zero, so the map tracks only
+// currently-active certs rather than growing unbounded over the process life.
+type perCertLimiter struct {
+	mu    sync.Mutex
+	inUse map[string]int
+	cap   int
+}
+
+func newPerCertLimiter(cap int) *perCertLimiter {
+	return &perCertLimiter{inUse: make(map[string]int), cap: cap}
+}
+
+// acquire reserves a slot for serial, reporting false if the cert is already at
+// its cap. A non-positive cap disables the limiter (every acquire succeeds and
+// nothing is tracked), matching MaxStreamsPerCert's zero-means-off default.
+func (p *perCertLimiter) acquire(serial string) bool {
+	if p.cap <= 0 {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.inUse[serial] >= p.cap {
+		return false
+	}
+	p.inUse[serial]++
+	return true
+}
+
+func (p *perCertLimiter) release(serial string) {
+	if p.cap <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.inUse[serial] <= 1 {
+		delete(p.inUse, serial)
+	} else {
+		p.inUse[serial]--
+	}
 }
 
 // NewRemoteReverseProxy splits tunnel upgrades on policy.TunnelPath from
@@ -152,6 +210,7 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 	// channel means "saturated" — the request is turned away with 503 rather
 	// than queued, so a flood fails fast instead of piling up goroutines.
 	sem := make(chan struct{}, policy.MaxConcurrentStreams)
+	perCert := newPerCertLimiter(policy.MaxStreamsPerCert)
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// opencode.tunnel is never resolved: DialContext below ignores
@@ -208,11 +267,13 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			return
 		}
 
+		leaf := leafCertOf(state)
+
 		// Device revocation liveness: VerifyConnection only checked this cert at
 		// handshake, so a cert revoked afterward is still refused here, on its
 		// next request over an already-established keep-alive connection, rather
 		// than serving until the connection drops and re-handshakes.
-		if leaf := leafCertOf(state); revocation != nil && leaf != nil && revocation.IsRevoked(serialOf(leaf)) {
+		if revocation != nil && leaf != nil && revocation.IsRevoked(serialOf(leaf)) {
 			l.Printf("rejected request from %s: certificate revoked", GetPeerSubjectCN(state))
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -227,6 +288,19 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			return
 		}
 
+		// Reject a non-normalized path before the allowlist decides anything: Go
+		// forwards r.URL.Path verbatim, so a device cert scoped to "/api" could
+		// otherwise send "/api/../admin" (or its %2e%2e form, already decoded
+		// into Path here), pass the prefix check, and have opencode resolve it
+		// back to "/admin". A real SSE/API client never sends "..", "." or "//"
+		// segments, so rejecting the un-clean form closes the bypass without
+		// silently rewriting request semantics.
+		if !pathIsNormalized(r.URL.Path) {
+			l.Printf("rejected request from %s: non-normalized path %q", GetPeerSubjectCN(state), r.URL.Path)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
 		// A configured path allowlist bounds what a device cert can reach: a
 		// request outside it is refused here, before a tunnel stream is ever
 		// opened. An empty allowlist permits everything (the default).
@@ -236,6 +310,20 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			return
 		}
 
+		// Per-certificate fairness: refuse before taking a global slot so one
+		// identity's flood can't consume the shared budget. serialOf keys on the
+		// leaf that already passed the role check above.
+		serial := ""
+		if leaf != nil {
+			serial = serialOf(leaf)
+		}
+		if !perCert.acquire(serial) {
+			l.Printf("rejected request from %s: per-certificate stream cap of %d reached", GetPeerSubjectCN(state), policy.MaxStreamsPerCert)
+			http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
+			return
+		}
+		defer perCert.release(serial)
+
 		select {
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
@@ -243,6 +331,15 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			l.Printf("rejected request from %s: %d concurrent requests already in flight", GetPeerSubjectCN(state), policy.MaxConcurrentStreams)
 			http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
 			return
+		}
+
+		// Bound the stream's lifetime so a genuinely-infinite SSE hog is
+		// eventually recycled (and can't outlive its cert's revocation forever),
+		// while normal long polls under the cap survive. Zero leaves it unbounded.
+		if policy.MaxStreamDuration > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), policy.MaxStreamDuration)
+			defer cancel()
+			r = r.WithContext(ctx)
 		}
 
 		// Cap the request body so a single device can't stream an unbounded
@@ -258,6 +355,16 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 // when it equals a prefix or sits beneath it — "/api" allows "/api" and
 // "/api/foo" but not "/apiary", so a prefix names a path segment boundary
 // rather than a raw string prefix.
+// pathIsNormalized reports whether p is already in the form path.Clean would
+// produce — no ".", "..", or empty ("//") segments, and rooted at "/". It is
+// the guard that makes pathAllowed's prefix check sound: only a normalized path
+// can't be walked back above an allowed prefix once the backend resolves it. An
+// empty path (never sent by net/http, which fills in "/") is treated as
+// non-normalized.
+func pathIsNormalized(p string) bool {
+	return p != "" && path.Clean(p) == p
+}
+
 func pathAllowed(prefixes []string, path string) bool {
 	if len(prefixes) == 0 {
 		return true

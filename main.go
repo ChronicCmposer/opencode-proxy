@@ -120,7 +120,11 @@ func run() error {
 			return err
 		}
 		dialer := NewTunnelDialer(tlsConf)
-		handler := WithVersionHeader(LocalVersionHeader, Version, proxy)
+		// Defense-in-depth: the home half enforces its own body cap and path
+		// checks rather than trusting the remote to be the only gate in front of
+		// opencode's filesystem/shell access.
+		handler := WithLocalRequestLimits(cfg.MaxRequestBytes, cfg.AllowedPathPrefixes, logger, proxy)
+		handler = WithVersionHeader(LocalVersionHeader, Version, handler)
 		// server is safe to share across every reconnect: net/http only
 		// leaves a Server unusable for a future Serve call once Shutdown or
 		// Close has actually been invoked on it (permanently, via an
@@ -157,6 +161,8 @@ func run() error {
 		MaxRequestBytes:      cfg.MaxRequestBytes,
 		TunnelCN:             tunnelCN,
 		AllowedPathPrefixes:  cfg.AllowedPathPrefixes,
+		MaxStreamDuration:    cfg.MaxStreamDuration,
+		MaxStreamsPerCert:    cfg.MaxStreamsPerCert,
 	}
 	// Fail fast on a default-deny misconfiguration before touching cert files
 	// or opening a listener, so the error is about the policy, not whatever I/O

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -10,6 +12,47 @@ import (
 	"testing"
 	"time"
 )
+
+// V4: the local half enforces its own body cap and path checks so the home
+// opencode isn't left exposed if the remote stops gating requests.
+func TestWithLocalRequestLimits(t *testing.T) {
+	// A backend that reads its whole body, so an over-cap body surfaces as the
+	// MaxBytesReader error the handler chain turns into 413.
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	logger := log.New(io.Discard, "", 0)
+
+	tests := []struct {
+		name     string
+		prefixes []string
+		method   string
+		path     string
+		body     string
+		want     int
+	}{
+		{"oversized body refused", nil, http.MethodPost, "/api", strings.Repeat("x", 64), http.StatusRequestEntityTooLarge},
+		{"body within cap passes", nil, http.MethodPost, "/api", "ok", http.StatusOK},
+		{"non-normalized path refused", nil, http.MethodGet, "/api/../admin", "", http.StatusBadRequest},
+		{"disallowed path refused", []string{"/api"}, http.MethodGet, "/admin", "", http.StatusForbidden},
+		{"allowed path passes", []string{"/api"}, http.MethodGet, "/api", "", http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := WithLocalRequestLimits(32, tt.prefixes, logger, backend)
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
 
 // Short bounds keep the 1:30 floor-to-cap ratio of the defaults, so the growth
 // and capping behaviour under test is the same one production sees.
