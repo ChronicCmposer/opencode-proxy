@@ -13,7 +13,11 @@ if [[ $# -ne 1 ]]; then
 fi
 name="$1"
 
-issue_leaf "$name" "$name" "$OU_DEVICE" "clientAuth"
+# 30-day lifetime (vs. the 90-day default for server/tunnel): a device cert is
+# the most exposed credential — it lives on a phone and inside an AirDropped,
+# plaintext-password .mobileconfig — so keep the window a leaked one stays
+# valid short. Rotate with `issue-client.sh <name>`; `renew.sh` flags it early.
+issue_leaf "$name" "$name" "$OU_DEVICE" "clientAuth" "" 30
 
 key="$OUT_DIR/$name.key"
 crt="$OUT_DIR/$name.crt"

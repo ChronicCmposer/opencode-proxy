@@ -26,10 +26,14 @@ mkout() {
   chmod 700 "$OUT_DIR"
 }
 
-# issue_leaf <name> <subject-CN> <OU-or-empty> <eku> [SAN,SAN,...]
-# eku is "serverAuth" or "clientAuth".
+# issue_leaf <name> <subject-CN> <OU-or-empty> <eku> [SAN,SAN,...] [days]
+# eku is "serverAuth" or "clientAuth". days defaults to 90; device certs pass
+# a shorter lifetime (see issue-client.sh) because a device credential is the
+# most-copied, highest-risk one — it rides on phones and inside an AirDropped
+# .mobileconfig — so a shorter window caps how long a leaked one stays valid
+# even before it is explicitly revoked.
 issue_leaf() {
-  local name="$1" cn="$2" ou="$3" eku="$4" sans="${5:-}"
+  local name="$1" cn="$2" ou="$3" eku="$4" sans="${5:-}" days="${6:-90}"
   require_ca
   mkout
 
@@ -65,7 +69,7 @@ issue_leaf() {
   openssl req -new -key "$key" -subj "$subj" -out "$csr"
 
   openssl x509 -req -in "$csr" -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
-    -days 90 -sha256 -extfile "$extfile" -out "$crt"
+    -days "$days" -sha256 -extfile "$extfile" -out "$crt"
 
   rm -f "$csr"
   echo "issued: $crt ($key)"

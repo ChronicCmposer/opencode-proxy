@@ -111,11 +111,25 @@ timers) point at `.../releases/latest/download/opencode-proxy.tar` and its
 
 `issue-client.sh` also emits `pki/out/phone.mobileconfig` — an Apple
 configuration profile bundling CA trust and the device identity in one
-install, and `phone.p12` for manual import elsewhere. See `pki/renew.sh` —
-leaf certs (server, tunnel, and device) are valid **90 days**; the CA itself
+install, and `phone.p12` for manual import elsewhere. The profile embeds the
+p12 password in plaintext (Apple's format requires it), so treat the
+`.mobileconfig` itself as a secret: transfer it, install it, then delete it.
+See `pki/renew.sh` — server and tunnel certs are valid **90 days**, while
+**device certs are valid 30 days** (they are the most-copied, highest-risk
+credential, so their exposure window is kept short); the CA itself
 (`init-ca.sh`) is valid **10 years** and isn't tracked by `renew.sh` — a
 CA renewal means re-issuing every leaf cert too, so it's intentionally a
 manual, rare operation rather than an automated one.
+
+**Defense in depth for a lost device.** mTLS is the gate, but a stolen device
+cert (or its `.mobileconfig`) otherwise grants full opencode — i.e. code
+execution on the Mac — until it expires. Two independent controls limit that:
+keep opencode's own `OPENCODE_SERVER_PASSWORD` set so a stolen cert alone
+isn't enough (the password is passed end-to-end and never seen by the AWS
+host), and revoke the cert's serial. Add the serial (from `openssl x509
+-noout -serial`) to `/etc/opencode-proxy/revoked.txt` on the remote — it takes
+effect at the **next handshake**, no restart or redeploy, so the lost device
+is cut off immediately without rotating the whole CA.
 
 **Keep `pki/out/ca.key` off any machine you don't fully trust.** It's the
 root of everything reachable through the tunnel.
@@ -140,10 +154,13 @@ going forward — see "Staying up to date" in step 4.
 ```
 
 The last argument is the **repo ref** the instance fetches its unit files and
-updater from at boot: it must be an **immutable** ref — a release tag
-(`vX.Y.Z`) or a full 40-char commit SHA, never a branch like `main`. Those
-files run as root at boot, so pinning them keeps what runs from shifting under
-a deployed stack. `deploy.sh` also passes the release signing **public key**
+updater from at boot. You may pass a release tag (`vX.Y.Z`), a branch, or a
+commit SHA — `deploy.sh` resolves it, on your trusted machine, to the full
+commit SHA it currently names and pins **that** into the stack (the template
+rejects anything but a 40-char SHA). Those files run as root at boot, and only
+a commit SHA is content-addressed: unlike a tag, which can be force-moved on
+GitHub to point at different content, a SHA fixes what runs to a commit you can
+review, and it can't shift under a deployed stack. `deploy.sh` also passes the release signing **public key**
 (`scripts/release-signing.pub`) into the stack as the `ReleaseSigningKey`
 parameter — an out-of-band trust anchor. The image signature is only
 meaningful if the key that verifies it can't be swapped alongside the image;
