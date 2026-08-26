@@ -1,0 +1,402 @@
+// Loopback integration test: browser -> remote proxy -> yamux tunnel ->
+// local proxy -> opencode, all on 127.0.0.1 with an in-memory CA.
+package main
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+type harness struct {
+	t          *testing.T
+	ca         *testCA
+	opencode   *httpServer
+	remoteAddr string
+	deviceCert tls.Certificate
+	caPath     string
+}
+
+// startRemoteServer issues the remote's server certificate, wires it up via
+// the real NewServerTLSConfig/NewRemoteReverseProxy production path (rather than
+// hand-building a *tls.Config that could silently drift from what production
+// actually does), and returns its listen address once it's accepting
+// connections. newHarness and TestNoTunnelReturns503 both need exactly this,
+// the latter without ever connecting a tunnel client to it.
+func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string, cfg Config) string {
+	t.Helper()
+
+	serverLeaf, err := ca.issue(testLeafOptions{
+		CommonName: "127.0.0.1", OU: "server", DNSNames: []string{"127.0.0.1"}, IsServer: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCertPath := writePEM(t, dir, "server.crt", serverLeaf.CertPEM)
+	serverKeyPath := writePEM(t, dir, "server.key", serverLeaf.KeyPEM)
+	remoteTLS, err := NewServerTLSConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteAddr := ln.Addr().String()
+	ln.Close() // RemoteServer binds its own listener via ListenAndServeTLS
+
+	remoteLog := log.Default()
+	reg := NewSessionRegistry()
+	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, nil, RemoteProxyPolicy{
+		TunnelPath:           cfg.TunnelPath,
+		MaxConcurrentStreams: cfg.MaxConcurrentStreams,
+		MaxRequestBytes:      cfg.MaxRequestBytes,
+	}, remoteLog))
+	srv := &http.Server{
+		Addr:      remoteAddr,
+		TLSConfig: remoteTLS,
+		Handler:   remoteHandler,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+	go srv.ListenAndServeTLS("", "")
+	t.Cleanup(cancel)
+	waitForListener(t, remoteAddr)
+
+	return remoteAddr
+}
+
+func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
+	return newHarnessWithConfig(t, opencodeHandler, DefaultConfig())
+}
+
+func newHarnessWithConfig(t *testing.T, opencodeHandler http.Handler, cfg Config) *harness {
+	t.Helper()
+	dir := t.TempDir()
+
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, ca.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oc := startHTTPServer(t, opencodeHandler)
+	remoteAddr := startRemoteServer(t, ca, caPath, dir, cfg)
+
+	tunnelLeaf := ca.issueTunnel(t, "home-mac")
+	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
+	tunnelKeyPath := writePEM(t, dir, "tunnel.key", tunnelLeaf.KeyPEM)
+	localTLS, err := NewClientTLSConfig(CertPaths{CA: caPath, Cert: tunnelCertPath, Key: tunnelKeyPath}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deviceLeaf := ca.issueDevice(t, "phone")
+	deviceCert, err := deviceLeaf.tlsCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy, err := NewLocalReverseProxy("http://"+oc.addr, log.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialer := NewTunnelDialer(localTLS)
+	server := &http.Server{Handler: WithVersionHeader(LocalVersionHeader, Version, proxy)} // safe to reuse — see run() in main.go
+	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
+	backoff := NewBackoff(cfg.BackoffMin, cfg.BackoffMax)
+	client := NewLocalClient("wss://"+remoteAddr+cfg.TunnelPath, nil, dialer, server, tunnelFactory, backoff)
+	lctx, lcancel := context.WithCancel(context.Background())
+	t.Cleanup(lcancel)
+	go client.Run(lctx)
+
+	return &harness{
+		t: t, ca: ca, opencode: oc, remoteAddr: remoteAddr,
+		deviceCert: deviceCert, caPath: caPath,
+	}
+}
+
+func (h *harness) deviceHTTPClient() *http.Client {
+	pool, err := LoadCAPool(h.caPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{h.deviceCert},
+				RootCAs:      pool,
+				ServerName:   "127.0.0.1",
+			},
+		},
+	}
+}
+
+func (h *harness) url(path string) string {
+	return "https://" + h.remoteAddr + path
+}
+
+func waitForTunnel(t *testing.T, cl *http.Client, url string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := cl.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("tunnel never became ready")
+}
+
+func TestRoundTripAndAuthorizationPassthrough(t *testing.T) {
+	var gotAuth atomic.Value
+	gotAuth.Store("")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		body, _ := io.ReadAll(r.Body)
+		w.Write(body)
+	})
+	h := newHarness(t, mux)
+	cl := h.deviceHTTPClient()
+	waitForTunnel(t, cl, h.url("/echo"))
+
+	req, _ := http.NewRequest(http.MethodPost, h.url("/echo"), strings.NewReader("hello opencode"))
+	req.Header.Set("Authorization", "Basic b3BlbmNvZGU6c2VjcmV0")
+	resp, err := cl.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello opencode" {
+		t.Fatalf("body round-trip: got %q", body)
+	}
+	if got := gotAuth.Load().(string); got != "Basic b3BlbmNvZGU6c2VjcmV0" {
+		t.Fatalf("Authorization header not preserved: got %q", got)
+	}
+	if got := resp.Header.Get(LocalVersionHeader); got == "" {
+		t.Errorf("%s missing on proxied response", LocalVersionHeader)
+	}
+	if got := resp.Header.Get(RemoteVersionHeader); got == "" {
+		t.Errorf("%s missing on proxied response", RemoteVersionHeader)
+	}
+}
+
+func TestSSEIsStreamedIncrementally(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/event", func(w http.ResponseWriter, r *http.Request) {
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < 3; i++ {
+			fmt.Fprintf(w, "data: tick-%d\n\n", i)
+			flusher.Flush()
+			time.Sleep(300 * time.Millisecond)
+		}
+	})
+	h := newHarness(t, mux)
+	cl := h.deviceHTTPClient()
+	waitForTunnel(t, cl, h.url("/event"))
+
+	resp, err := cl.Get(h.url("/event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var lastArrival time.Time
+	var gaps []time.Duration
+	for i := 0; i < 3; i++ {
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("reading event %d: %v", i, err)
+			}
+			if strings.HasPrefix(line, "data:") {
+				now := time.Now()
+				if !lastArrival.IsZero() {
+					gaps = append(gaps, now.Sub(lastArrival))
+				}
+				lastArrival = now
+				break
+			}
+		}
+	}
+	// If the proxy buffered the whole response instead of flushing each
+	// write, all three events would arrive back-to-back with ~0 gap.
+	for _, g := range gaps {
+		if g < 100*time.Millisecond {
+			t.Fatalf("events arrived without streaming delay (gap %v) - response was buffered", g)
+		}
+	}
+}
+
+func TestNoTunnelReturns503(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, ca.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	addr := startRemoteServer(t, ca, caPath, dir, DefaultConfig())
+
+	pool, err := LoadCAPool(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceLeaf := ca.issueDevice(t, "phone")
+	deviceCert, err := deviceLeaf.tlsCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		Certificates: []tls.Certificate{deviceCert}, RootCAs: pool, ServerName: "127.0.0.1",
+	}}}
+	resp, err := cl.Get("https://" + addr + "/anything")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if got := resp.Header.Get(RemoteVersionHeader); got == "" {
+		t.Errorf("%s missing on 503 response", RemoteVersionHeader)
+	}
+	if got := resp.Header.Get(LocalVersionHeader); got != "" {
+		t.Errorf("%s unexpectedly present with no tunnel connected: %q", LocalVersionHeader, got)
+	}
+}
+
+// TestConcurrencyLimitReturns503 is the V3 control: with the in-flight cap set
+// to 1, a request held open in opencode occupies the only slot, so a second
+// concurrent device request is turned away with 503 rather than opening
+// another yamux stream through the tunnel.
+func TestConcurrencyLimitReturns503(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+	})
+	defer close(release)
+
+	cfg := DefaultConfig()
+	cfg.MaxConcurrentStreams = 1
+	h := newHarnessWithConfig(t, mux, cfg)
+	cl := h.deviceHTTPClient()
+	waitForTunnel(t, cl, h.url("/ping"))
+
+	// Occupy the single slot with a request that blocks in opencode.
+	go func() {
+		resp, err := cl.Get(h.url("/slow"))
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started // the slot is now held for the duration of the blocked request
+
+	resp, err := cl.Get(h.url("/ping"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("second concurrent request status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestNoClientCertRejected(t *testing.T) {
+	h := newHarness(t, http.NewServeMux())
+	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true,
+	}}}
+	_, err := cl.Get(h.url("/anything"))
+	if err == nil {
+		t.Fatal("expected TLS handshake failure without a client cert")
+	}
+}
+
+func TestCertFromDifferentCARejected(t *testing.T) {
+	h := newHarness(t, http.NewServeMux())
+
+	otherCA, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherLeaf := otherCA.issueDevice(t, "impostor")
+	otherCert, err := otherLeaf.tlsCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := LoadCAPool(h.caPath)
+	cl := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		Certificates: []tls.Certificate{otherCert}, RootCAs: pool, ServerName: "127.0.0.1",
+	}}}
+	_, err = cl.Get(h.url("/anything"))
+	if err == nil {
+		t.Fatal("expected TLS handshake failure for a cert from an untrusted CA")
+	}
+}
+
+type httpServer struct{ addr string }
+
+func startHTTPServer(t *testing.T, h http.Handler) *httpServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: h}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	return &httpServer{addr: ln.Addr().String()}
+}
+
+func waitForListener(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("listener at %s never came up", addr)
+}

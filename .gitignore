@@ -1,0 +1,8 @@
+pki/out/
+*.log
+/version.go
+/opencode-proxy
+/opencode-proxy.tar
+/opencode-proxy.tar.sha256
+/opencode-proxy.tar.sig
+/signing/

@@ -1,0 +1,10 @@
+# PLACEHOLDER — not a real signing key.
+#
+# Run scripts/init-signing-key.sh on a trusted machine to generate the real
+# release signing keypair; it overwrites this file with the public half (which
+# you then commit) and writes the private half to a gitignored location.
+#
+# Until this is replaced with a real ed25519 public key, signature
+# verification fails closed: update-image.sh and the deploy scripts refuse to
+# import an image they cannot verify against this key. That is intentional —
+# set up signing before publishing or deploying a release.
