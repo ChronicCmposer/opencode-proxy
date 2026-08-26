@@ -268,18 +268,21 @@ func TestLoadRevokedSerials(t *testing.T) {
 	}
 
 	// Mixed formats, comments and blanks — all must normalize to the same set.
+	// The "serial=..." line is exactly what `openssl x509 -noout -serial`
+	// prints, which the docs promise pastes in directly.
 	path := writePEM(t, dir, "revoked.txt", []byte(`
 # a lost phone
 DE:AD:BE:EF
 0x00ff
   1a2b3c
+serial=00CAFE
 
 `))
 	revoked, err := LoadRevokedSerials(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"deadbeef", "ff", "1a2b3c"} {
+	for _, want := range []string{"deadbeef", "ff", "1a2b3c", "cafe"} {
 		if _, ok := revoked[want]; !ok {
 			t.Errorf("serial %q not in revocation set %v", want, revoked)
 		}

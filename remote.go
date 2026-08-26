@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net"
@@ -22,28 +23,66 @@ const RemoteVersionHeader = "X-Opencode-Proxy-Remote-Version"
 type SessionRegistry struct {
 	mu   sync.Mutex
 	sess *yamux.Session
+	// cert is the leaf certificate the current tunnel authenticated with, kept
+	// so revocation can be re-evaluated against the live session — the tunnel
+	// is one long-lived connection that never re-handshakes, so the
+	// handshake-time VerifyConnection check can never fire on it again.
+	cert *x509.Certificate
 }
 
 func NewSessionRegistry() *SessionRegistry {
 	return &SessionRegistry{}
 }
 
-// Set installs sess as the current tunnel only if no live tunnel is already
-// connected, reporting whether it was accepted. It is deliberately
-// first-writer-wins rather than last-writer-wins: blindly replacing a healthy
-// session would let anyone holding the tunnel certificate silently evict the
-// real home tunnel and man-in-the-middle every device request through an
-// attacker-controlled backend. A stale session left behind by a dropped
-// connection is not "live" — yamux keepalive marks it closed (IsClosed),
-// after which the next Set is accepted, so a genuine reconnect isn't blocked.
-func (r *SessionRegistry) Set(sess *yamux.Session) bool {
+// Set installs sess (authenticated with cert) as the current tunnel, closing
+// whatever session it replaces, and reports whether the session it replaced
+// was still live.
+//
+// Last-writer-wins is deliberate: a home that dropped and reconnected must be
+// able to reclaim its slot immediately, without waiting out the server's
+// keepalive interval before the stale session reads as closed — first-
+// writer-wins would reject the legitimate reconnect (common after the Mac
+// sleeps) until then, and, worse, let anyone who grabbed the slot during the
+// gap hold it against the real home. Identity is enforced upstream: reaching
+// here requires the tunnel role *and* the pinned CN (VerifyPeerCN), so only
+// the one enrolled home can register. "Replaced a still-live session" is thus
+// a duplicate endpoint or, at worst, someone wielding the home's own key;
+// either way the caller logs it, but the legitimate reconnect still wins.
+func (r *SessionRegistry) Set(sess *yamux.Session, cert *x509.Certificate) (replacedLive bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.sess != nil && !r.sess.IsClosed() {
+	old := r.sess
+	r.sess = sess
+	r.cert = cert
+	r.mu.Unlock()
+	if old != nil {
+		replacedLive = !old.IsClosed()
+		old.Close()
+	}
+	return replacedLive
+}
+
+// CloseCurrentIfRevoked tears down the connected tunnel if its certificate is
+// now on revocation's denylist, reporting whether it did. It is the tunnel's
+// liveness counterpart to the per-request device check: VerifyConnection only
+// runs at handshake, so without this a revoked tunnel cert would keep serving
+// device traffic until the connection happened to drop. Called on the device
+// request path, so a revoked tunnel is dropped the next time anything would be
+// forwarded through it. A nil revocation (feature off) never closes anything.
+func (r *SessionRegistry) CloseCurrentIfRevoked(revocation *RevocationList) bool {
+	if revocation == nil {
 		return false
 	}
-	r.sess = sess
-	return true
+	r.mu.Lock()
+	sess, cert := r.sess, r.cert
+	r.mu.Unlock()
+	if sess == nil || cert == nil || sess.IsClosed() {
+		return false
+	}
+	if revocation.IsRevoked(serialOf(cert)) {
+		sess.Close() // the acceptTunnel goroutine observes this and Clears the registry
+		return true
+	}
+	return false
 }
 
 // Get returns the current session, or nil if none is connected. The
@@ -65,6 +104,7 @@ func (r *SessionRegistry) Clear(sess *yamux.Session) {
 	r.mu.Lock()
 	if r.sess == sess { // don't clobber a newer session Set() already installed
 		r.sess = nil
+		r.cert = nil
 	}
 	r.mu.Unlock()
 }
@@ -105,7 +145,7 @@ type RemoteProxyPolicy struct {
 // it builds internally. ctx governs an accepted tunnel's lifetime: a hijacked
 // connection is invisible to http.Server.Shutdown, so without it the session
 // would only end when the process exits.
-func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, policy RemoteProxyPolicy, l *log.Logger) http.Handler {
+func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, revocation *RevocationList, policy RemoteProxyPolicy, l *log.Logger) http.Handler {
 	// A buffered channel used as a counting semaphore: a device request must
 	// take a slot before it opens a yamux stream, so no more than
 	// MaxConcurrentStreams are ever in flight through the one tunnel. A full
@@ -168,6 +208,25 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			return
 		}
 
+		// Device revocation liveness: VerifyConnection only checked this cert at
+		// handshake, so a cert revoked afterward is still refused here, on its
+		// next request over an already-established keep-alive connection, rather
+		// than serving until the connection drops and re-handshakes.
+		if leaf := leafCertOf(state); revocation != nil && leaf != nil && revocation.IsRevoked(serialOf(leaf)) {
+			l.Printf("rejected request from %s: certificate revoked", GetPeerSubjectCN(state))
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		// Tunnel revocation liveness: if the connected tunnel's own certificate
+		// has since been revoked, tear it down instead of forwarding this
+		// request through it (the tunnel never re-handshakes on its own).
+		if reg.CloseCurrentIfRevoked(revocation) {
+			l.Printf("closed tunnel: its certificate is now revoked")
+			http.Error(w, "no tunnel connected", http.StatusServiceUnavailable)
+			return
+		}
+
 		// A configured path allowlist bounds what a device cert can reach: a
 		// request outside it is refused here, before a tunnel stream is ever
 		// opened. An empty allowlist permits everything (the default).
@@ -217,13 +276,13 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 		l.Printf("tunnel accept failed: %v", err)
 		return
 	}
-	if !reg.Set(sess) {
-		// A healthy tunnel is already connected. Reject rather than replace:
-		// see SessionRegistry.Set. This is either a duplicate/misconfigured
-		// endpoint or an attempt to hijack the tunnel, so log it loudly.
-		l.Printf("rejected tunnel from %s: a tunnel is already connected", GetPeerSubjectCN(r.TLS))
-		sess.Close()
-		return
+	// Last-writer-wins so a reconnecting home reclaims its slot immediately
+	// (see SessionRegistry.Set). Replacing a *still-live* session is unusual —
+	// only the pinned-CN home can reach here, so it means a duplicate endpoint
+	// or someone wielding the home's own key — so log it loudly for alerting,
+	// but let the reconnect win.
+	if replacedLive := reg.Set(sess, leafCertOf(r.TLS)); replacedLive {
+		l.Printf("warning: new tunnel from %s replaced a still-live tunnel — duplicate endpoint or possible tunnel-key compromise", GetPeerSubjectCN(r.TLS))
 	}
 	l.Printf("tunnel connected from %s", GetPeerSubjectCN(r.TLS))
 	defer reg.Clear(sess)

@@ -61,7 +61,7 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string, cfg Config)
 	reg := NewSessionRegistry()
 	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
-	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, RemoteProxyPolicy{
+	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, nil, RemoteProxyPolicy{
 		TunnelPath:           cfg.TunnelPath,
 		MaxConcurrentStreams: cfg.MaxConcurrentStreams,
 		MaxRequestBytes:      cfg.MaxRequestBytes,

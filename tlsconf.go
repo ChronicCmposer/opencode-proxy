@@ -80,7 +80,10 @@ func LoadRevokedSerials(path string) (RevokedSerials, error) {
 // separators, the canonical form both the file entries and live peer
 // certificates are compared in.
 func normalizeSerial(s string) (string, error) {
-	cleaned := strings.ToLower(s)
+	cleaned := strings.ToLower(strings.TrimSpace(s))
+	// `openssl x509 -noout -serial` prints "serial=AB12CD"; strip that prefix
+	// so its output pastes in directly, as the LoadRevokedSerials doc promises.
+	cleaned = strings.TrimPrefix(cleaned, "serial=")
 	cleaned = strings.TrimPrefix(cleaned, "0x")
 	cleaned = strings.ReplaceAll(cleaned, ":", "")
 	cleaned = strings.ReplaceAll(cleaned, " ", "")

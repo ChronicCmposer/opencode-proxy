@@ -174,7 +174,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, policy, logger)
+	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, revocation, policy, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
 	// ReadHeaderTimeout bounds the slow-header (Slowloris) window on a
 	// listener that faces the public internet. No ReadTimeout/WriteTimeout:

@@ -31,7 +31,7 @@ func newTestRemoteHandlerWithPolicy(t *testing.T, policy RemoteProxyPolicy) (htt
 	}
 	reg := NewSessionRegistry()
 	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
-	handler := NewRemoteReverseProxy(context.Background(), reg, tunnelFactory, policy, log.Default())
+	handler := NewRemoteReverseProxy(context.Background(), reg, tunnelFactory, nil, policy, log.Default())
 	return handler, reg
 }
 
