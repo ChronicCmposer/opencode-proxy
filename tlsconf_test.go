@@ -103,6 +103,7 @@ func TestServerAndClientConfig(t *testing.T) {
 	if len(serverConf.Certificates) != 1 {
 		t.Errorf("Certificates = %d, want 1", len(serverConf.Certificates))
 	}
+	assertTLSHardening(t, "server", serverConf)
 
 	tunnelLeaf := ca.issueTunnel(t, "home")
 	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
@@ -120,6 +121,33 @@ func TestServerAndClientConfig(t *testing.T) {
 	}
 	if len(clientConf.Certificates) != 1 {
 		t.Errorf("Certificates = %d, want 1", len(clientConf.Certificates))
+	}
+	assertTLSHardening(t, "client", clientConf)
+}
+
+// assertTLSHardening checks the V4 controls both configs must carry: a TLS 1.2
+// floor, an AEAD-only cipher allowlist for that 1.2 fallback, and pinned
+// modern curves.
+func assertTLSHardening(t *testing.T, label string, c *tls.Config) {
+	t.Helper()
+	if c.MinVersion != tls.VersionTLS12 {
+		t.Errorf("%s MinVersion = %x, want TLS 1.2", label, c.MinVersion)
+	}
+	wantSuites := map[uint16]bool{
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:       true,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:       true,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: true,
+	}
+	if len(c.CipherSuites) != len(wantSuites) {
+		t.Errorf("%s CipherSuites = %v, want the 3 ECDSA AEAD suites", label, c.CipherSuites)
+	}
+	for _, s := range c.CipherSuites {
+		if !wantSuites[s] {
+			t.Errorf("%s CipherSuites includes non-allowlisted suite %x", label, s)
+		}
+	}
+	if len(c.CurvePreferences) == 0 || c.CurvePreferences[0] != tls.X25519 {
+		t.Errorf("%s CurvePreferences = %v, want X25519 first", label, c.CurvePreferences)
 	}
 }
 

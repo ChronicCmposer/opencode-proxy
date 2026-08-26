@@ -161,6 +161,24 @@ func (r *RevocationList) IsRevoked(serial string) bool {
 // certificate needs 1.2 to keep working.
 const minTLSVersion = tls.VersionTLS12
 
+// tlsCipherSuites is the explicit cipher-suite allowlist for the TLS 1.2
+// fallback. Go ignores CipherSuites for TLS 1.3 (whose suites are always
+// AEAD and safe), so this only constrains 1.2, kept solely for older Safari:
+// AEAD suites only — GCM and ChaCha20-Poly1305, no CBC and no RSA key
+// exchange. Every certificate in this PKI is ECDSA P-256 (pki/lib.sh issues
+// with `openssl ecparam -name prime256v1`), so only the ECDSA-authentication
+// suites can ever be negotiated; pinning them documents that and forecloses
+// the weaker defaults a public listener would otherwise still offer at 1.2.
+var tlsCipherSuites = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+}
+
+// tlsCurvePreferences pins the ECDHE key-exchange curves to the two modern,
+// constant-time options, X25519 first.
+var tlsCurvePreferences = []tls.CurveID{tls.X25519, tls.CurveP256}
+
 // CertPaths groups the three PEM paths that always travel together: nothing
 // loads one without the other two, and passing them separately cost every
 // function along the wiring path three positional string parameters.
@@ -206,10 +224,12 @@ func NewServerTLSConfig(certs CertPaths, revocation *RevocationList) (*tls.Confi
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    pool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   minTLSVersion,
+		Certificates:     []tls.Certificate{cert},
+		ClientCAs:        pool,
+		ClientAuth:       tls.RequireAndVerifyClientCert,
+		MinVersion:       minTLSVersion,
+		CipherSuites:     tlsCipherSuites,
+		CurvePreferences: tlsCurvePreferences,
 		// VerifyConnection runs after the chain is verified, so
 		// VerifiedChains[0][0] is the peer leaf. Rejecting here fails the
 		// handshake itself — a revoked cert never reaches a request handler,
@@ -246,10 +266,12 @@ func NewClientTLSConfig(certs CertPaths, serverName string) (*tls.Config, error)
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      pool,
-		ServerName:   serverName,
-		MinVersion:   tls.VersionTLS12,
+		Certificates:     []tls.Certificate{cert},
+		RootCAs:          pool,
+		ServerName:       serverName,
+		MinVersion:       minTLSVersion,
+		CipherSuites:     tlsCipherSuites,
+		CurvePreferences: tlsCurvePreferences,
 	}, nil
 }
 
