@@ -39,6 +39,20 @@ type Config struct {
 	// TunnelPath is the HTTP path the remote half listens on for the tunnel
 	// upgrade; every other path is treated as a device request.
 	TunnelPath string
+	// MaxConcurrentStreams caps how many device requests may be in flight
+	// through the single tunnel at once. Each one opens a yamux stream, a
+	// bounded resource; without a cap one authenticated (or stolen) device
+	// cert could open requests in a loop and starve every other device. The
+	// remote returns 503 once this many are already in flight.
+	MaxConcurrentStreams int
+	// MaxRequestBytes caps a device request body, so a single client can't
+	// stream an unbounded upload through the tunnel. It bounds only the
+	// request body — opencode's responses, including the long-lived SSE
+	// stream, are unaffected.
+	MaxRequestBytes int64
+	// MaxHeaderBytes caps request header size on both halves' http.Servers,
+	// making Go's implicit 1MB default explicit and tunable.
+	MaxHeaderBytes int
 }
 
 func DefaultConfig() Config {
@@ -50,6 +64,10 @@ func DefaultConfig() Config {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		TunnelPath:        "/_tunnel",
+
+		MaxConcurrentStreams: 256,
+		MaxRequestBytes:      32 << 20, // 32 MiB
+		MaxHeaderBytes:       1 << 20,  // 1 MiB, matching net/http's implicit default
 	}
 }
 
@@ -87,6 +105,10 @@ type configJSON struct {
 	ReadHeaderTimeout *string `json:"read-header-timeout"`
 	IdleTimeout       *string `json:"idle-timeout"`
 	TunnelPath        *string `json:"tunnel-path"`
+
+	MaxConcurrentStreams *int   `json:"max-concurrent-streams"`
+	MaxRequestBytes      *int64 `json:"max-request-bytes"`
+	MaxHeaderBytes       *int   `json:"max-header-bytes"`
 }
 
 // durationField pairs one of Config's time.Duration fields with its JSON
@@ -138,6 +160,15 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 	if raw.TunnelPath != nil {
 		c.TunnelPath = *raw.TunnelPath
 	}
+	if raw.MaxConcurrentStreams != nil {
+		c.MaxConcurrentStreams = *raw.MaxConcurrentStreams
+	}
+	if raw.MaxRequestBytes != nil {
+		c.MaxRequestBytes = *raw.MaxRequestBytes
+	}
+	if raw.MaxHeaderBytes != nil {
+		c.MaxHeaderBytes = *raw.MaxHeaderBytes
+	}
 	return nil
 }
 
@@ -155,6 +186,21 @@ func (c Config) validate() error {
 	}
 	if !strings.HasPrefix(c.TunnelPath, "/") {
 		return fmt.Errorf("tunnel-path must start with /, got %q", c.TunnelPath)
+	}
+	// The same failure mode as the durations: a non-positive limit reads as
+	// "disabled" (an empty semaphore blocks every request, a zero byte cap
+	// rejects every body), not "smaller", so reject it loudly.
+	for _, f := range []struct {
+		name string
+		v    int64
+	}{
+		{"max-concurrent-streams", int64(c.MaxConcurrentStreams)},
+		{"max-request-bytes", c.MaxRequestBytes},
+		{"max-header-bytes", int64(c.MaxHeaderBytes)},
+	} {
+		if f.v <= 0 {
+			return fmt.Errorf("%s must be positive, got %d", f.name, f.v)
+		}
 	}
 	return nil
 }

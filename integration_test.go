@@ -34,7 +34,7 @@ type harness struct {
 // actually does), and returns its listen address once it's accepting
 // connections. newHarness and TestNoTunnelReturns503 both need exactly this,
 // the latter without ever connecting a tunnel client to it.
-func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
+func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string, cfg Config) string {
 	t.Helper()
 
 	serverLeaf, err := ca.issue(testLeafOptions{
@@ -57,12 +57,11 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 	remoteAddr := ln.Addr().String()
 	ln.Close() // RemoteServer binds its own listener via ListenAndServeTLS
 
-	cfg := DefaultConfig()
 	remoteLog := log.Default()
 	reg := NewSessionRegistry()
 	remoteTunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
-	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, cfg.TunnelPath, remoteLog))
+	remoteHandler := WithVersionHeader(RemoteVersionHeader, Version, NewRemoteReverseProxy(ctx, reg, remoteTunnelFactory, cfg.TunnelPath, cfg.MaxConcurrentStreams, cfg.MaxRequestBytes, remoteLog))
 	srv := &http.Server{
 		Addr:      remoteAddr,
 		TLSConfig: remoteTLS,
@@ -82,6 +81,10 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 }
 
 func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
+	return newHarnessWithConfig(t, opencodeHandler, DefaultConfig())
+}
+
+func newHarnessWithConfig(t *testing.T, opencodeHandler http.Handler, cfg Config) *harness {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -95,7 +98,7 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 	}
 
 	oc := startHTTPServer(t, opencodeHandler)
-	remoteAddr := startRemoteServer(t, ca, caPath, dir)
+	remoteAddr := startRemoteServer(t, ca, caPath, dir, cfg)
 
 	tunnelLeaf := ca.issueTunnel(t, "home-mac")
 	tunnelCertPath := writePEM(t, dir, "tunnel.crt", tunnelLeaf.CertPEM)
@@ -111,7 +114,6 @@ func newHarness(t *testing.T, opencodeHandler http.Handler) *harness {
 		t.Fatal(err)
 	}
 
-	cfg := DefaultConfig()
 	proxy, err := NewLocalReverseProxy("http://"+oc.addr, log.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +265,7 @@ func TestNoTunnelReturns503(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	addr := startRemoteServer(t, ca, caPath, dir)
+	addr := startRemoteServer(t, ca, caPath, dir, DefaultConfig())
 
 	pool, err := LoadCAPool(caPath)
 	if err != nil {
@@ -291,6 +293,46 @@ func TestNoTunnelReturns503(t *testing.T) {
 	}
 	if got := resp.Header.Get(LocalVersionHeader); got != "" {
 		t.Errorf("%s unexpectedly present with no tunnel connected: %q", LocalVersionHeader, got)
+	}
+}
+
+// TestConcurrencyLimitReturns503 is the V3 control: with the in-flight cap set
+// to 1, a request held open in opencode occupies the only slot, so a second
+// concurrent device request is turned away with 503 rather than opening
+// another yamux stream through the tunnel.
+func TestConcurrencyLimitReturns503(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+	})
+	defer close(release)
+
+	cfg := DefaultConfig()
+	cfg.MaxConcurrentStreams = 1
+	h := newHarnessWithConfig(t, mux, cfg)
+	cl := h.deviceHTTPClient()
+	waitForTunnel(t, cl, h.url("/ping"))
+
+	// Occupy the single slot with a request that blocks in opencode.
+	go func() {
+		resp, err := cl.Get(h.url("/slow"))
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started // the slot is now held for the duration of the blocked request
+
+	resp, err := cl.Get(h.url("/ping"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("second concurrent request status = %d, want 503", resp.StatusCode)
 	}
 }
 

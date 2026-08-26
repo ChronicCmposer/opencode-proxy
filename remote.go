@@ -74,7 +74,13 @@ func (r *SessionRegistry) Clear(sess *yamux.Session) {
 // proxy it builds internally. ctx governs an accepted tunnel's lifetime: a
 // hijacked connection is invisible to http.Server.Shutdown, so without it
 // the session would only end when the process exits.
-func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, tunnelPath string, l *log.Logger) http.Handler {
+func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, tunnelPath string, maxConcurrent int, maxRequestBytes int64, l *log.Logger) http.Handler {
+	// A buffered channel used as a counting semaphore: a device request must
+	// take a slot before it opens a yamux stream, so no more than
+	// maxConcurrent are ever in flight through the one tunnel. A full channel
+	// means "saturated" — the request is turned away with 503 rather than
+	// queued, so a flood fails fast instead of piling up goroutines.
+	sem := make(chan struct{}, maxConcurrent)
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// opencode.tunnel is never resolved: DialContext below ignores
@@ -120,6 +126,20 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		default:
+			l.Printf("rejected request from %s: %d concurrent requests already in flight", GetPeerSubjectCN(state), maxConcurrent)
+			http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Cap the request body so a single device can't stream an unbounded
+		// upload through the tunnel. Only the body is bounded; the SSE
+		// response stream back the other way is untouched.
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 		proxy.ServeHTTP(w, r)
 	})
 }

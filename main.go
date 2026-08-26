@@ -134,6 +134,7 @@ func run() error {
 			Handler:           handler,
 			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 			IdleTimeout:       cfg.IdleTimeout,
+			MaxHeaderBytes:    cfg.MaxHeaderBytes,
 		}
 		client := NewLocalClient(f.remoteURL, logger, dialer, server, tunnelFactory, backoff)
 		return client.Run(ctx)
@@ -148,7 +149,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, cfg.TunnelPath, logger)
+	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, cfg.TunnelPath, cfg.MaxConcurrentStreams, cfg.MaxRequestBytes, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
 	// ReadHeaderTimeout bounds the slow-header (Slowloris) window on a
 	// listener that faces the public internet. No ReadTimeout/WriteTimeout:
@@ -161,6 +162,7 @@ func run() error {
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 	}
 	go func() {
 		<-ctx.Done()

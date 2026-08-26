@@ -15,7 +15,7 @@ func newTestRemoteHandler(t *testing.T) (http.Handler, *SessionRegistry) {
 	cfg := DefaultConfig()
 	reg := NewSessionRegistry()
 	tunnelFactory := NewTunnelFactory(NewYamuxConfig(cfg.KeepAliveInterval, cfg.StreamOpenTimeout), context.Background())
-	handler := NewRemoteReverseProxy(context.Background(), reg, tunnelFactory, cfg.TunnelPath, log.Default())
+	handler := NewRemoteReverseProxy(context.Background(), reg, tunnelFactory, cfg.TunnelPath, cfg.MaxConcurrentStreams, cfg.MaxRequestBytes, log.Default())
 	return handler, reg
 }
 

@@ -4,5 +4,8 @@
   "keepalive-interval": "30s",
   "stream-open-timeout": "2m",
   "read-header-timeout": "10s",
-  "idle-timeout": "2m"
+  "idle-timeout": "2m",
+  "max-concurrent-streams": 256,
+  "max-request-bytes": 33554432,
+  "max-header-bytes": 1048576
 }

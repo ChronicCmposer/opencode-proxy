@@ -35,20 +35,26 @@ func TestLoadConfigReadsEveryKey(t *testing.T) {
 	  "stream-open-timeout": "5m",
 	  "read-header-timeout": "15s",
 	  "idle-timeout": "3m",
-	  "tunnel-path": "/custom-tunnel"
+	  "tunnel-path": "/custom-tunnel",
+	  "max-concurrent-streams": 128,
+	  "max-request-bytes": 1048576,
+	  "max-header-bytes": 65536
 	}`)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	want := Config{
-		BackoffMin:        2 * time.Second,
-		BackoffMax:        45 * time.Second,
-		KeepAliveInterval: 10 * time.Second,
-		StreamOpenTimeout: 5 * time.Minute,
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       3 * time.Minute,
-		TunnelPath:        "/custom-tunnel",
+		BackoffMin:           2 * time.Second,
+		BackoffMax:           45 * time.Second,
+		KeepAliveInterval:    10 * time.Second,
+		StreamOpenTimeout:    5 * time.Minute,
+		ReadHeaderTimeout:    15 * time.Second,
+		IdleTimeout:          3 * time.Minute,
+		TunnelPath:           "/custom-tunnel",
+		MaxConcurrentStreams: 128,
+		MaxRequestBytes:      1048576,
+		MaxHeaderBytes:       65536,
 	}
 	if cfg != want {
 		t.Errorf("LoadConfig() = %+v, want %+v", cfg, want)
@@ -83,6 +89,9 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"duration as a number", `{"backoff-max": 30}`, "backoff-max"},
 		{"unknown key", `{"backoff-minimum": "1s"}`, "backoff-minimum"},
 		{"tunnel path missing leading slash", `{"tunnel-path": "tunnel"}`, "tunnel-path"},
+		{"zero concurrency", `{"max-concurrent-streams": 0}`, "max-concurrent-streams"},
+		{"negative body cap", `{"max-request-bytes": -1}`, "max-request-bytes"},
+		{"zero header cap", `{"max-header-bytes": 0}`, "max-header-bytes"},
 		{"malformed json", `{`, "parse config"},
 	}
 	for _, tt := range tests {
