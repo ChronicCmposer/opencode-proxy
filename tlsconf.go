@@ -15,6 +15,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Must match the OU values pki/issue-tunnel.sh and pki/issue-client.sh
@@ -94,6 +96,66 @@ func serialOf(cert *x509.Certificate) string {
 	return cert.SerialNumber.Text(16)
 }
 
+// RevocationList evaluates certificate revocation against a file that may
+// change while the server runs. A file-backed denylist is only worth anything
+// if a serial added after startup takes effect without a restart: revocation
+// is the sole way to cut off a stolen device certificate, and the deployment
+// (see cloudformation/stack.yaml, which ships an initially *empty*
+// revoked.txt) promises a lost device can be denied "no redeploy needed." So
+// IsRevoked re-reads the file whenever its mtime or size has changed since the
+// last check — a newly listed serial is refused at the very next handshake.
+//
+// An empty --revoked path opts out of revocation entirely: NewRevocationList
+// returns nil and no VerifyConnection callback is installed, so an
+// unconfigured deployment still pays nothing.
+type RevocationList struct {
+	path    string
+	mu      sync.Mutex
+	serials RevokedSerials
+	modTime time.Time
+	size    int64
+}
+
+// NewRevocationList loads the initial denylist from path and returns a list
+// that reloads on change. A malformed file is rejected here at startup, the
+// same fail-fast behavior LoadRevokedSerials had. An empty path means
+// "revocation not configured" and yields (nil, nil): callers treat a nil list
+// as "never revoke, install no callback."
+func NewRevocationList(path string) (*RevocationList, error) {
+	if path == "" {
+		return nil, nil
+	}
+	serials, err := LoadRevokedSerials(path)
+	if err != nil {
+		return nil, err
+	}
+	rl := &RevocationList{path: path, serials: serials}
+	if fi, err := os.Stat(path); err == nil {
+		rl.modTime, rl.size = fi.ModTime(), fi.Size()
+	}
+	return rl, nil
+}
+
+// IsRevoked reports whether serial (canonical hex, per normalizeSerial) is on
+// the current denylist, reloading the file first if it has changed on disk. A
+// reload that fails to parse — a truncated file caught mid-edit, say — keeps
+// the last good set rather than silently disabling revocation; a stat error
+// (file temporarily missing) does the same.
+func (r *RevocationList) IsRevoked(serial string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if fi, err := os.Stat(r.path); err == nil {
+		if fi.ModTime() != r.modTime || fi.Size() != r.size {
+			if serials, err := LoadRevokedSerials(r.path); err == nil {
+				r.serials = serials
+				r.modTime, r.size = fi.ModTime(), fi.Size()
+			}
+		}
+	}
+	_, bad := r.serials[serial]
+	return bad
+}
+
 // minTLSVersion is the floor for both server and client configs: Safari on
 // older iOS still negotiates 1.2, so anything issued for a device
 // certificate needs 1.2 to keep working.
@@ -135,10 +197,10 @@ func loadPoolAndCert(certs CertPaths, label string) (*x509.CertPool, tls.Certifi
 }
 
 // NewServerTLSConfig verifies chain-to-CA and rejects any peer certificate
-// whose serial is in revoked; per-request role checking is VerifyPeerRole's
-// job, not this. revoked may be empty, in which case no certificate is
-// rejected on revocation grounds.
-func NewServerTLSConfig(certs CertPaths, revoked RevokedSerials) (*tls.Config, error) {
+// whose serial is on revocation's denylist; per-request role checking is
+// VerifyPeerRole's job, not this. revocation may be nil, in which case no
+// certificate is rejected on revocation grounds.
+func NewServerTLSConfig(certs CertPaths, revocation *RevocationList) (*tls.Config, error) {
 	pool, cert, err := loadPoolAndCert(certs, "server")
 	if err != nil {
 		return nil, err
@@ -152,15 +214,18 @@ func NewServerTLSConfig(certs CertPaths, revoked RevokedSerials) (*tls.Config, e
 		// VerifiedChains[0][0] is the peer leaf. Rejecting here fails the
 		// handshake itself — a revoked cert never reaches a request handler,
 		// and the check covers both tunnel and device certs uniformly.
-		VerifyConnection: verifyNotRevoked(revoked),
+		// revocation re-reads its file per call, so a serial listed after the
+		// server started is refused at this handshake, no restart needed.
+		VerifyConnection: verifyNotRevoked(revocation),
 	}, nil
 }
 
 // verifyNotRevoked builds the VerifyConnection callback that rejects a peer
-// whose leaf serial is listed in revoked. It returns nil (no callback) when
-// the list is empty, so an unconfigured deployment pays nothing.
-func verifyNotRevoked(revoked RevokedSerials) func(tls.ConnectionState) error {
-	if len(revoked) == 0 {
+// whose leaf serial is on revocation's (reloading) denylist. It returns nil
+// (no callback) when revocation is nil — the --revoked flag was omitted — so
+// an unconfigured deployment pays nothing.
+func verifyNotRevoked(revocation *RevocationList) func(tls.ConnectionState) error {
+	if revocation == nil {
 		return nil
 	}
 	return func(cs tls.ConnectionState) error {
@@ -168,7 +233,7 @@ func verifyNotRevoked(revoked RevokedSerials) func(tls.ConnectionState) error {
 			return ErrRevoked
 		}
 		leaf := cs.VerifiedChains[0][0]
-		if _, bad := revoked[serialOf(leaf)]; bad {
+		if revocation.IsRevoked(serialOf(leaf)) {
 			return fmt.Errorf("%w: serial %s (%q)", ErrRevoked, serialOf(leaf), leaf.Subject.CommonName)
 		}
 		return nil

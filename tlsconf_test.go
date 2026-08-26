@@ -235,15 +235,21 @@ func TestVerifyNotRevoked(t *testing.T) {
 	revokedCert := certFromLeaf(t, revokedLeaf)
 	goodCert := certFromLeaf(t, goodLeaf)
 
-	revoked := RevokedSerials{serialOf(revokedCert): struct{}{}}
-
-	if verifyNotRevoked(RevokedSerials{}) != nil {
-		t.Error("verifyNotRevoked with an empty set should return no callback")
+	dir := t.TempDir()
+	path := writePEM(t, dir, "revoked.txt", []byte(serialOf(revokedCert)+"\n"))
+	revocation, err := NewRevocationList(path)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	check := verifyNotRevoked(revoked)
+	// A nil list (--revoked omitted) installs no callback.
+	if verifyNotRevoked(nil) != nil {
+		t.Error("verifyNotRevoked(nil) should return no callback")
+	}
+
+	check := verifyNotRevoked(revocation)
 	if check == nil {
-		t.Fatal("verifyNotRevoked with a non-empty set should return a callback")
+		t.Fatal("verifyNotRevoked with a configured list should return a callback")
 	}
 
 	// A revoked leaf is rejected; a good one passes.
@@ -258,6 +264,40 @@ func TestVerifyNotRevoked(t *testing.T) {
 	// A connection with no verified chain is rejected rather than trusted.
 	if err := check(tls.ConnectionState{}); err == nil {
 		t.Error("empty verified chain should be rejected")
+	}
+}
+
+// TestRevocationListReload is the V1 regression: a serial added to the file
+// after the list is built must take effect at the next check, with no reload
+// call of the caller's own — the deployment ships an empty revoked.txt and
+// promises "no redeploy needed" when a device is lost.
+func TestRevocationListReload(t *testing.T) {
+	ca, err := newTestCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lostCert := certFromLeaf(t, ca.issueDevice(t, "lost-phone"))
+
+	dir := t.TempDir()
+	// Start with an empty list, exactly as cloudformation/stack.yaml's
+	// `touch revoked.txt` leaves it.
+	path := writePEM(t, dir, "revoked.txt", []byte(""))
+	revocation, err := NewRevocationList(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revocation.IsRevoked(serialOf(lostCert)) {
+		t.Fatal("serial should not be revoked before it is listed")
+	}
+
+	// Rewrite the file with the lost device's serial. A same-mtime write can
+	// hide behind the second-granularity timestamp, but the size changes from
+	// 0, which IsRevoked also keys on.
+	if err := os.WriteFile(path, []byte(serialOf(lostCert)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !revocation.IsRevoked(serialOf(lostCert)) {
+		t.Error("serial added to the file after startup should be revoked at the next check")
 	}
 }
 

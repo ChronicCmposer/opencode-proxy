@@ -140,11 +140,11 @@ func run() error {
 	}
 
 	reg := NewSessionRegistry()
-	revoked, err := LoadRevokedSerials(f.revokedPath)
+	revocation, err := NewRevocationList(f.revokedPath)
 	if err != nil {
 		return err
 	}
-	tlsConf, err := NewServerTLSConfig(certs, revoked)
+	tlsConf, err := NewServerTLSConfig(certs, revocation)
 	if err != nil {
 		return err
 	}
