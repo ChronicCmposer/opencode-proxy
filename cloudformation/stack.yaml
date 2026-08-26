@@ -142,7 +142,7 @@ Resources:
           set -eux
           trap '/opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}' EXIT
 
-          dnf install -y awscli containerd tar || yum install -y awscli containerd tar
+          dnf install -y awscli containerd tar openssl || yum install -y awscli containerd tar openssl
           systemctl enable --now containerd
 
           mkdir -p /etc/opencode-proxy
@@ -154,18 +154,35 @@ Resources:
           chmod 600 /etc/opencode-proxy/server.key
           chmod 644 /etc/opencode-proxy/ca.crt /etc/opencode-proxy/server.crt
 
-          curl -fsSL -o /tmp/opencode-proxy.tar "${ImageTarURL}"
-          ctr images import /tmp/opencode-proxy.tar
-          sha256sum /tmp/opencode-proxy.tar | awk '{print $1}' > /etc/opencode-proxy/current.sha256
-          rm -f /tmp/opencode-proxy.tar
+          # Certificate revocation list (--revoked). Created empty so the
+          # service starts; add one hex serial per line to cut off a lost
+          # device cert without rotating the whole CA, no redeploy needed.
+          touch /etc/opencode-proxy/revoked.txt
+          chmod 644 /etc/opencode-proxy/revoked.txt
 
-          # Fetch this ref's systemd units and update script as a tarball
-          # rather than embedding them in this template, so updates to
-          # them don't require a stack redeploy. Cleaned up at the end.
+          # Fetch this ref's systemd units, update script, and the release
+          # signing public key as a tarball rather than embedding them in this
+          # template, so updates to them don't require a stack redeploy. Done
+          # before the image import so the signing key is in place to verify
+          # it. Cleaned up at the end.
           curl -fsSL -o /tmp/opencode-proxy-src.tar.gz \
             "https://codeload.github.com/ChronicCmposer/opencode-proxy/tar.gz/${RepoRef}"
           mkdir -p /tmp/opencode-proxy-src
           tar -xzf /tmp/opencode-proxy-src.tar.gz -C /tmp/opencode-proxy-src --strip-components=1
+
+          # Release signing public key: the image is verified against this
+          # before it ever runs as root. See scripts/init-signing-key.sh.
+          install -m 644 /tmp/opencode-proxy-src/scripts/release-signing.pub /etc/opencode-proxy/release-signing.pub
+
+          # Verify the image signature at first boot too, not just on later
+          # updates — a same-origin checksum proves integrity, not authenticity.
+          curl -fsSL -o /tmp/opencode-proxy.tar "${ImageTarURL}"
+          curl -fsSL -o /tmp/opencode-proxy.tar.sig "${ImageTarURL}.sig"
+          openssl pkeyutl -verify -rawin -pubin -inkey /etc/opencode-proxy/release-signing.pub \
+            -in /tmp/opencode-proxy.tar -sigfile /tmp/opencode-proxy.tar.sig
+          ctr images import /tmp/opencode-proxy.tar
+          sha256sum /tmp/opencode-proxy.tar | awk '{print $1}' > /etc/opencode-proxy/current.sha256
+          rm -f /tmp/opencode-proxy.tar /tmp/opencode-proxy.tar.sig
 
           cat > /etc/opencode-proxy/remote.env <<ENV
           IMAGE_REF=${ImageRef}

@@ -34,6 +34,7 @@ type flags struct {
 
 	caPath, certPath, keyPath string
 	configPath                string
+	revokedPath               string
 
 	remoteURL, opencodeURL, serverName string
 
@@ -49,6 +50,8 @@ func parseFlags() (*flags, error) {
 	keyPath := flag.String("key", "", "path to this endpoint's private key (PEM)")
 
 	configPath := flag.String("config", "", "path to the JSON config file (optional; built-in defaults are used when omitted)")
+
+	revokedPath := flag.String("revoked", "", "--remote: path to a certificate revocation list (one hex serial per line; optional)")
 
 	remoteURL := flag.String("remote-url", "", "--local: wss:// URL of the remote proxy's tunnel endpoint")
 	opencodeURL := flag.String("opencode-url", "http://127.0.0.1:4096", "--local: URL of the local opencode server")
@@ -74,6 +77,7 @@ func parseFlags() (*flags, error) {
 		certPath:    *certPath,
 		keyPath:     *keyPath,
 		configPath:  *configPath,
+		revokedPath: *revokedPath,
 		remoteURL:   *remoteURL,
 		opencodeURL: *opencodeURL,
 		serverName:  *serverName,
@@ -120,22 +124,43 @@ func run() error {
 		// it ends each session by closing the yamux session (this Serve
 		// call's Listener), which just makes Serve return; the Server
 		// itself is untouched.
-		server := &http.Server{Handler: handler}
+		//
+		// ReadHeaderTimeout guards against a slow-header (Slowloris) peer
+		// tying up a goroutine indefinitely. No ReadTimeout/WriteTimeout:
+		// this side proxies opencode's own responses, including the
+		// long-lived GET /event SSE stream, so a whole-request deadline
+		// would cut those off.
+		server := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+			IdleTimeout:       cfg.IdleTimeout,
+		}
 		client := NewLocalClient(f.remoteURL, logger, dialer, server, tunnelFactory, backoff)
 		return client.Run(ctx)
 	}
 
 	reg := NewSessionRegistry()
-	tlsConf, err := NewServerTLSConfig(certs)
+	revoked, err := LoadRevokedSerials(f.revokedPath)
+	if err != nil {
+		return err
+	}
+	tlsConf, err := NewServerTLSConfig(certs, revoked)
 	if err != nil {
 		return err
 	}
 	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, cfg.TunnelPath, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
+	// ReadHeaderTimeout bounds the slow-header (Slowloris) window on a
+	// listener that faces the public internet. No ReadTimeout/WriteTimeout:
+	// device requests stream opencode's responses (notably the long-lived
+	// GET /event SSE stream) back through the tunnel, and a whole-request
+	// deadline would sever those.
 	srv := &http.Server{
-		Addr:      f.addr,
-		TLSConfig: tlsConf,
-		Handler:   handler,
+		Addr:              f.addr,
+		TLSConfig:         tlsConf,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 	go func() {
 		<-ctx.Done()

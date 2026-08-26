@@ -40,10 +40,10 @@ if [[ ! -f "$image_tar" ]]; then
   exit 1
 fi
 
-if ! command -v ctr >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
-  echo "containerd/ctr, curl, or tar not found — installing..."
+if ! command -v ctr >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1; then
+  echo "containerd/ctr, curl, tar, or openssl not found — installing..."
   apt-get update
-  apt-get install -y containerd curl tar
+  apt-get install -y containerd curl tar openssl
 fi
 systemctl enable --now containerd
 
@@ -52,13 +52,10 @@ install -m 644 "$cert_dir/ca.crt" /etc/opencode-proxy/ca.crt
 install -m 644 "$cert_dir/tunnel.crt" /etc/opencode-proxy/tunnel.crt
 install -m 600 "$cert_dir/tunnel.key" /etc/opencode-proxy/tunnel.key
 
-echo "importing $image_tar into containerd..."
-ctr images import "$image_tar"
-sha256sum "$image_tar" | awk '{print $1}' > /etc/opencode-proxy/current.sha256
-
-# Fetch this ref's systemd units and update script as a tarball rather than
-# assuming a repo checkout is available — a plain codeload fetch, extract
-# just what's needed, then discard the rest.
+# Fetch this ref's systemd units, update script, and the release signing
+# public key as a tarball rather than assuming a repo checkout is available —
+# a plain codeload fetch, extract just what's needed, then discard the rest.
+# Done before the import so the signing key is available to verify the image.
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 echo "fetching supporting files from ref $repo_ref..."
@@ -66,6 +63,25 @@ curl -fsSL -o "$work_dir/repo.tar.gz" \
   "https://codeload.github.com/ChronicCmposer/opencode-proxy/tar.gz/${repo_ref}"
 mkdir -p "$work_dir/src"
 tar -xzf "$work_dir/repo.tar.gz" -C "$work_dir/src" --strip-components=1
+
+# Release signing public key — used to verify the recurring image updates
+# (update-image.sh) and, if a signature sits beside the bootstrap tar, this
+# initial import too.
+install -m 644 "$work_dir/src/scripts/release-signing.pub" /etc/opencode-proxy/release-signing.pub
+
+echo "importing $image_tar into containerd..."
+# The bootstrap tar is a local, operator-supplied file (works offline). If a
+# detached signature sits beside it, verify it; otherwise proceed but say so —
+# the recurring auto-updates over the network are always signature-verified.
+if [[ -f "$image_tar.sig" ]]; then
+  openssl pkeyutl -verify -rawin -pubin -inkey /etc/opencode-proxy/release-signing.pub \
+    -in "$image_tar" -sigfile "$image_tar.sig"
+  echo "bootstrap image signature verified"
+else
+  echo "warning: no $image_tar.sig beside the bootstrap tar — importing it unverified (trusting this local file); auto-updates will still be signature-verified" >&2
+fi
+ctr images import "$image_tar"
+sha256sum "$image_tar" | awk '{print $1}' > /etc/opencode-proxy/current.sha256
 
 cat > /etc/opencode-proxy/local.env <<ENV
 IMAGE_REF=$image_ref

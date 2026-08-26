@@ -189,9 +189,14 @@ Both `deploy.sh` (EC2) and `vm/deploy-local.sh` (VM) also install an
 `opencode-proxy-update.timer` that runs every 6 hours on each host. Each
 check downloads only the small `opencode-proxy.tar.sha256` file and
 compares it to what's currently deployed (`/etc/opencode-proxy/current.sha256`)
-— the full image is only pulled when that checksum actually changed. On a
-change it snapshots the currently-running image under a rollback tag,
-imports the new one, and restarts the service; if the service doesn't stay
+— the full image is only pulled when that checksum actually changed. The
+checksum is same-origin, so it proves only that the download wasn't corrupted,
+**not** that it is authentic; before importing, the updater verifies the
+maintainer's Ed25519 signature over the tar (`opencode-proxy.tar.sig`) against
+the pinned public key at `/etc/opencode-proxy/release-signing.pub`, and
+**refuses to import anything it can't verify** (see "Release signing" below).
+On a verified change it snapshots the currently-running image under a rollback
+tag, imports the new one, and restarts the service; if the service doesn't stay
 up (`systemctl is-active`, checked 15s after restart), it automatically
 re-tags and restarts back to the previous image. Either way you can see
 what happened:
@@ -210,6 +215,32 @@ To publish an update: `make bump-version LEVEL=patch && make release` (see
 "Versioning and releases" in step 1), then wait up to 6h — or force it
 immediately with `sudo systemctl start opencode-proxy-update` on either
 host.
+
+### Release signing
+
+The published image is code every host runs as root, so it is signed, not
+just checksummed. One-time setup on a trusted machine:
+
+```sh
+scripts/init-signing-key.sh   # writes signing/release.key (keep offline,
+                              # like pki/out/ca.key) and scripts/release-signing.pub
+git add scripts/release-signing.pub && git commit -m "add release signing key"
+```
+
+`make release` then signs `opencode-proxy.tar` with the private key and
+publishes `opencode-proxy.tar.sig` alongside it. Every host pins the public
+key (`/etc/opencode-proxy/release-signing.pub`, installed by the deploy
+scripts) and verifies the signature before importing — at first boot and on
+every auto-update. Verification is **fail-closed**: until you replace the
+placeholder `scripts/release-signing.pub` with a real key, deploys and updates
+refuse to import. Guard `signing/release.key` like the CA key; losing it means
+re-running `init-signing-key.sh` and redeploying the new public key, and
+leaking it lets an attacker forge releases.
+
+> The systemd units and update script are still fetched from
+> `codeload.github.com/.../<RepoRef>` at deploy time. Pin `RepoRef`/`repo_ref`
+> to an immutable tag or commit (not the default `main`) so that path can't
+> shift under you between deploys.
 
 ### Checking versions from a response
 
@@ -304,9 +335,25 @@ it lives (SSM + instance restart for the server cert; re-run
 the VM and `systemctl restart opencode-proxy-local`, for the tunnel cert;
 reinstall the `.mobileconfig` for a device cert).
 
+## Revoking a compromised device
+
+A lost or compromised device certificate doesn't require rotating the whole
+CA. The remote reads a revocation list at `--revoked`
+(`/etc/opencode-proxy/revoked.txt` on the EC2 host), one certificate serial
+per line as hex; any listed serial is rejected at the TLS handshake, for
+tunnel and device certs alike. Get a cert's serial with:
+
+```sh
+openssl x509 -in pki/out/phone.crt -noout -serial   # e.g. serial=1A2B3C...
+```
+
+Add that value (colons and a `serial=` prefix are fine — it's normalized) to
+`revoked.txt` and restart the service; no redeploy or CA rotation needed. Full
+CRL/OCSP responders are still not implemented — this is a static denylist you
+maintain by hand.
+
 ## Out of scope
 
-Certificate revocation (CRL/OCSP) isn't implemented — a compromised device
-cert must be handled by re-issuing the CA and every other cert. There's no
-rate limiting or WAF in front of the remote host beyond the mTLS gate, and
-this only supports one home opencode instance per remote host.
+There's no rate limiting or WAF in front of the remote host beyond the mTLS
+gate and the server's slow-header timeout (`read-header-timeout`), and this
+only supports one home opencode instance per remote host.

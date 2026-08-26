@@ -34,10 +34,25 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+PRIV="${RELEASE_SIGNING_DIR:-signing}/release.key"
+if [[ ! -f "$PRIV" ]]; then
+  echo "error: signing key $PRIV not found — run scripts/init-signing-key.sh first" >&2
+  echo "releases must be signed; hosts verify the signature before importing the image (see update-image.sh)" >&2
+  exit 1
+fi
+
 echo "releasing $tag..."
 make image
 
-gh release create "$tag" opencode-proxy.tar opencode-proxy.tar.sha256 \
+# Sign the image tar so every host can verify authenticity — not just
+# integrity — before running it as root. The detached signature is published
+# alongside the tar and its checksum.
+openssl pkeyutl -sign -rawin -inkey "$PRIV" \
+  -in opencode-proxy.tar -out opencode-proxy.tar.sig
+echo "signed opencode-proxy.tar -> opencode-proxy.tar.sig"
+
+gh release create "$tag" \
+  opencode-proxy.tar opencode-proxy.tar.sha256 opencode-proxy.tar.sig \
   --title "$tag" --generate-notes
 
 echo "released $tag"

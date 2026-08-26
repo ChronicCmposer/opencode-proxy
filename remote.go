@@ -27,14 +27,22 @@ func NewSessionRegistry() *SessionRegistry {
 	return &SessionRegistry{}
 }
 
-func (r *SessionRegistry) Set(sess *yamux.Session) {
+// Set installs sess as the current tunnel only if no live tunnel is already
+// connected, reporting whether it was accepted. It is deliberately
+// first-writer-wins rather than last-writer-wins: blindly replacing a healthy
+// session would let anyone holding the tunnel certificate silently evict the
+// real home tunnel and man-in-the-middle every device request through an
+// attacker-controlled backend. A stale session left behind by a dropped
+// connection is not "live" — yamux keepalive marks it closed (IsClosed),
+// after which the next Set is accepted, so a genuine reconnect isn't blocked.
+func (r *SessionRegistry) Set(sess *yamux.Session) bool {
 	r.mu.Lock()
-	old := r.sess
-	r.sess = sess
-	r.mu.Unlock()
-	if old != nil {
-		old.Close()
+	defer r.mu.Unlock()
+	if r.sess != nil && !r.sess.IsClosed() {
+		return false
 	}
+	r.sess = sess
+	return true
 }
 
 // Get returns the current session, or nil if none is connected. The
@@ -122,8 +130,15 @@ func acceptTunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, r
 		l.Printf("tunnel accept failed: %v", err)
 		return
 	}
+	if !reg.Set(sess) {
+		// A healthy tunnel is already connected. Reject rather than replace:
+		// see SessionRegistry.Set. This is either a duplicate/misconfigured
+		// endpoint or an attempt to hijack the tunnel, so log it loudly.
+		l.Printf("rejected tunnel from %s: a tunnel is already connected", GetPeerSubjectCN(r.TLS))
+		sess.Close()
+		return
+	}
 	l.Printf("tunnel connected from %s", GetPeerSubjectCN(r.TLS))
-	reg.Set(sess)
 	defer reg.Clear(sess)
 	if waitForTunnelClose(ctx, sess) {
 		l.Printf("tunnel closed on shutdown")

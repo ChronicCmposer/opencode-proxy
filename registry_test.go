@@ -22,22 +22,42 @@ func newTestSession(t *testing.T) *yamux.Session {
 	return sess
 }
 
-func TestSessionRegistrySetReplacesAndClosesOld(t *testing.T) {
+func TestSessionRegistrySetRejectsWhileHealthy(t *testing.T) {
 	reg := NewSessionRegistry()
 
 	first := newTestSession(t)
-	reg.Set(first)
+	if !reg.Set(first) {
+		t.Fatal("Set() into an empty registry should be accepted")
+	}
 	if got := reg.Get(); got != first {
 		t.Fatalf("Get() = %v, want first session", got)
 	}
 
 	second := newTestSession(t)
-	reg.Set(second)
+	if reg.Set(second) {
+		t.Fatal("Set() should be rejected while a healthy tunnel is connected")
+	}
+	if got := reg.Get(); got != first {
+		t.Fatalf("Get() = %v, want first session to remain current", got)
+	}
+	if first.IsClosed() {
+		t.Fatal("Set() should not disturb the healthy session it rejected a replacement for")
+	}
+}
+
+func TestSessionRegistrySetAcceptsAfterCurrentClosed(t *testing.T) {
+	reg := NewSessionRegistry()
+
+	first := newTestSession(t)
+	reg.Set(first)
+	first.Close() // a dropped connection: yamux marks the session closed
+
+	second := newTestSession(t)
+	if !reg.Set(second) {
+		t.Fatal("Set() should be accepted once the previous session is closed (genuine reconnect)")
+	}
 	if got := reg.Get(); got != second {
 		t.Fatalf("Get() = %v, want second session", got)
-	}
-	if !first.IsClosed() {
-		t.Fatal("Set() should close the session it replaced")
 	}
 }
 
@@ -46,6 +66,7 @@ func TestSessionRegistryClearOnlyClobbersMatchingSession(t *testing.T) {
 
 	first := newTestSession(t)
 	reg.Set(first)
+	first.Close() // free the slot so the next Set is accepted
 	second := newTestSession(t)
 	reg.Set(second)
 

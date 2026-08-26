@@ -19,7 +19,8 @@ ExecStart=/usr/bin/ctr run --rm --net-host \
   --config /etc/opencode-proxy/config.json \
   --ca /etc/opencode-proxy/ca.crt \
   --cert /etc/opencode-proxy/server.crt \
-  --key /etc/opencode-proxy/server.key
+  --key /etc/opencode-proxy/server.key \
+  --revoked /etc/opencode-proxy/revoked.txt
 Restart=always
 RestartSec=2
 

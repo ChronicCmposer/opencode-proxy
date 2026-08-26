@@ -27,6 +27,15 @@ type Config struct {
 	// StreamOpenTimeout wants to be generous: a browser's GET /event SSE
 	// stream is expected to sit idle-but-open for a long time.
 	StreamOpenTimeout time.Duration
+	// ReadHeaderTimeout caps how long a peer may take to send request
+	// headers, so a slow-header (Slowloris) client can't pin a connection's
+	// goroutine open indefinitely. It bounds only the header read, not the
+	// body or response, so long-lived SSE streams are unaffected.
+	ReadHeaderTimeout time.Duration
+	// IdleTimeout caps how long a kept-alive connection may sit idle between
+	// requests before the server closes it, reclaiming goroutines from peers
+	// that connect and then go quiet.
+	IdleTimeout time.Duration
 	// TunnelPath is the HTTP path the remote half listens on for the tunnel
 	// upgrade; every other path is treated as a device request.
 	TunnelPath string
@@ -38,6 +47,8 @@ func DefaultConfig() Config {
 		BackoffMax:        30 * time.Second,
 		KeepAliveInterval: 30 * time.Second,
 		StreamOpenTimeout: 2 * time.Minute,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 		TunnelPath:        "/_tunnel",
 	}
 }
@@ -73,6 +84,8 @@ type configJSON struct {
 	BackoffMax        *string `json:"backoff-max"`
 	KeepAliveInterval *string `json:"keepalive-interval"`
 	StreamOpenTimeout *string `json:"stream-open-timeout"`
+	ReadHeaderTimeout *string `json:"read-header-timeout"`
+	IdleTimeout       *string `json:"idle-timeout"`
 	TunnelPath        *string `json:"tunnel-path"`
 }
 
@@ -96,6 +109,8 @@ func (c *Config) durationFields(raw configJSON) []durationField {
 		{"backoff-max", raw.BackoffMax, &c.BackoffMax},
 		{"keepalive-interval", raw.KeepAliveInterval, &c.KeepAliveInterval},
 		{"stream-open-timeout", raw.StreamOpenTimeout, &c.StreamOpenTimeout},
+		{"read-header-timeout", raw.ReadHeaderTimeout, &c.ReadHeaderTimeout},
+		{"idle-timeout", raw.IdleTimeout, &c.IdleTimeout},
 	}
 }
 

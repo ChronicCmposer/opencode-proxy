@@ -1,11 +1,56 @@
 package main
 
 import (
+	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/yamux"
 )
+
+// trackedCloser is a stand-in for the net.Conn raceCtx's stream-opening work
+// returns: it records whether Close was called.
+type trackedCloser struct{ closed chan struct{} }
+
+func (c *trackedCloser) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+// TestRaceCtxClosesLateResultOnCancel proves the fix for the stream leak: when
+// ctx is cancelled first, the value work produces afterward must be closed
+// rather than silently dropped, or every cancelled request leaks a yamux
+// stream.
+func TestRaceCtxClosesLateResultOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	tc := &trackedCloser{closed: make(chan struct{})}
+
+	// work blocks until we release it, so cancellation is guaranteed to win.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	_, err := raceCtx(ctx, func() (*trackedCloser, error) {
+		<-release
+		return tc, nil
+	})
+	if err != context.Canceled {
+		t.Fatalf("raceCtx err = %v, want context.Canceled", err)
+	}
+
+	close(release) // let the abandoned work finish and produce its value
+	select {
+	case <-tc.closed:
+	case <-time.After(time.Second):
+		t.Fatal("raceCtx leaked the late result: Close was never called")
+	}
+}
 
 func TestYamuxRoleString(t *testing.T) {
 	tests := []struct {

@@ -45,7 +45,7 @@ func startRemoteServer(t *testing.T, ca *testCA, caPath, dir string) string {
 	}
 	serverCertPath := writePEM(t, dir, "server.crt", serverLeaf.CertPEM)
 	serverKeyPath := writePEM(t, dir, "server.key", serverLeaf.KeyPEM)
-	remoteTLS, err := NewServerTLSConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath})
+	remoteTLS, err := NewServerTLSConfig(CertPaths{CA: caPath, Cert: serverCertPath, Key: serverKeyPath}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

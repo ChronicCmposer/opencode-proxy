@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -171,7 +172,14 @@ func waitOrCancel(ctx context.Context, done <-chan struct{}, onCancel func()) bo
 // or ctx is cancelled, whichever comes first. Unlike waitOrCancel, work has
 // no way to be aborted early (there's nothing to call an onCancel on): a
 // cancellation just stops raceCtx from waiting on it any longer, while the
-// goroutine itself runs to completion and its result is discarded.
+// goroutine itself runs to completion.
+//
+// When ctx wins the race, work's result would otherwise be abandoned. For the
+// stream-opening work this is used with, that value is a live net.Conn (a
+// yamux stream that counts against the session's stream limit), so silently
+// dropping it leaks one stream per cancelled request — a client that opens and
+// immediately cancels requests in a loop could exhaust the tunnel. A separate
+// goroutine waits for the late result and closes it if it satisfies io.Closer.
 func raceCtx[T any](ctx context.Context, work func() (T, error)) (T, error) {
 	type result struct {
 		val T
@@ -184,6 +192,14 @@ func raceCtx[T any](ctx context.Context, work func() (T, error)) (T, error) {
 	}()
 	select {
 	case <-ctx.Done():
+		go func() {
+			r := <-ch
+			if r.err == nil {
+				if c, ok := any(r.val).(io.Closer); ok {
+					c.Close()
+				}
+			}
+		}()
 		var zero T
 		return zero, ctx.Err()
 	case r := <-ch:

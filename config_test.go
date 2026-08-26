@@ -33,6 +33,8 @@ func TestLoadConfigReadsEveryKey(t *testing.T) {
 	  "backoff-max": "45s",
 	  "keepalive-interval": "10s",
 	  "stream-open-timeout": "5m",
+	  "read-header-timeout": "15s",
+	  "idle-timeout": "3m",
 	  "tunnel-path": "/custom-tunnel"
 	}`)
 	cfg, err := LoadConfig(path)
@@ -44,6 +46,8 @@ func TestLoadConfigReadsEveryKey(t *testing.T) {
 		BackoffMax:        45 * time.Second,
 		KeepAliveInterval: 10 * time.Second,
 		StreamOpenTimeout: 5 * time.Minute,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       3 * time.Minute,
 		TunnelPath:        "/custom-tunnel",
 	}
 	if cfg != want {

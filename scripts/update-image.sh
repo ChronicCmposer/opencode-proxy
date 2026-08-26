@@ -22,6 +22,12 @@ fi
 STATE_DIR="${STATE_DIR:-/etc/opencode-proxy}"
 
 CURRENT_SHA_FILE="$STATE_DIR/current.sha256"
+# Public half of the release signing key (scripts/init-signing-key.sh). The
+# published checksum is same-origin and so proves only that the download wasn't
+# corrupted, not that it came from the maintainer — anyone who can publish a
+# release supplies a matching checksum. The signature is the real authenticity
+# gate, and it is mandatory: without this key the updater refuses to import.
+PUBKEY="$STATE_DIR/release-signing.pub"
 ROLLBACK_REF="${IMAGE_REF}-rollback"
 # ctr run's ExecStart runs in the foreground, so `systemctl is-active`
 # genuinely reflects whether the container process is still alive.
@@ -42,12 +48,29 @@ if [[ "$current_sha" == "$new_sha" ]]; then
 fi
 log "new image available (have $current_sha, want $new_sha) — updating"
 
+if [[ ! -f "$PUBKEY" ]]; then
+  log "error: release signing key $PUBKEY not found — refusing to import an unverifiable image"
+  log "install scripts/release-signing.pub to $PUBKEY (see README 'Release signing')"
+  exit 1
+fi
+
 curl -fsSL -o "$work_dir/image.tar" "$IMAGE_TAR_URL"
 downloaded_sha="$(sha256sum "$work_dir/image.tar" | awk '{print $1}')"
 if [[ "$downloaded_sha" != "$new_sha" ]]; then
   log "error: downloaded tar checksum ($downloaded_sha) doesn't match published checksum ($new_sha) — aborting, nothing changed"
   exit 1
 fi
+
+# Authenticity gate: verify the maintainer's signature over the tar before it
+# ever reaches containerd. A tampered or attacker-published release fails here.
+curl -fsSL -o "$work_dir/image.tar.sig" "${IMAGE_TAR_URL}.sig"
+if ! openssl pkeyutl -verify -rawin -pubin -inkey "$PUBKEY" \
+     -in "$work_dir/image.tar" -sigfile "$work_dir/image.tar.sig" >/dev/null 2>&1; then
+  log "error: signature verification FAILED for the downloaded image — aborting, nothing changed"
+  log "the release was not signed by the key in $PUBKEY; treat this as a possible tampered release"
+  exit 1
+fi
+log "signature verified against $PUBKEY"
 
 ctr images tag "$IMAGE_REF" "$ROLLBACK_REF" >/dev/null 2>&1 || true # no-op on first-ever update
 

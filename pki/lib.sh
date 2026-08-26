@@ -20,6 +20,10 @@ require_ca() {
 
 mkout() {
   mkdir -p "$OUT_DIR"
+  # Everything under out/ is secret key material (the CA key, device p12s,
+  # and the plaintext-password .mobileconfig profiles); keep the directory
+  # owner-only so a stray world-readable umask can't expose them.
+  chmod 700 "$OUT_DIR"
 }
 
 # issue_leaf <name> <subject-CN> <OU-or-empty> <eku> [SAN,SAN,...]
