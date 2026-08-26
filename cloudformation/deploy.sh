@@ -5,10 +5,14 @@
 # Usage:
 #   cloudformation/deploy.sh <stack-name> <domain-name> <key-pair-name> <admin-cidr> <repo-ref>
 #
-# <repo-ref> must be an immutable ref — a release tag (vX.Y.Z) or a full
-# 40-char commit SHA, never a branch: the instance fetches root-run scripts
-# and unit files from it at boot, and the same ref must not repoint under a
-# deployed stack.
+# <repo-ref> is anything git can resolve in your local checkout — a release
+# tag (vX.Y.Z), a branch, or a commit SHA. It is resolved here, on your
+# trusted machine, to the full commit SHA it currently names, and that SHA is
+# what the stack pins: the instance fetches root-run scripts and unit files
+# from it at boot, and a commit SHA is content-addressed, so unlike a tag
+# (which can be force-moved on GitHub) it can't be repointed under a deployed
+# stack. Resolve, don't trust the name: check `git log` for the SHA printed
+# below before confirming a production deploy.
 #
 # Example:
 #   cloudformation/deploy.sh opencode-proxy code.example.com my-ec2-key 203.0.113.9/32 v1.2.0
@@ -20,6 +24,17 @@ if [[ $# -ne 5 ]]; then
   exit 1
 fi
 stack_name="$1" domain="$2" key_name="$3" admin_cidr="$4" repo_ref="$5"
+
+# Resolve the ref to the full 40-char commit SHA it points at right now. The
+# stack pins that SHA (RepoRef's AllowedPattern rejects anything else), so what
+# runs as root at boot is fixed to a commit you can review, not a mutable name.
+repo_sha="$(git -C .. rev-parse --verify --quiet "${repo_ref}^{commit}" || true)"
+if [[ ! "$repo_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "error: could not resolve '$repo_ref' to a commit SHA in this checkout" >&2
+  echo "       pass a tag, branch, or SHA that 'git rev-parse' can resolve here" >&2
+  exit 1
+fi
+echo "pinning RepoRef to $repo_sha (resolved from '$repo_ref')"
 
 # The release signing public key is passed in as a template parameter — an
 # immutable, out-of-band trust anchor — rather than fetched from the repo
@@ -35,7 +50,7 @@ aws cloudformation deploy \
       DomainName="$domain" \
       KeyName="$key_name" \
       AdminCidr="$admin_cidr" \
-      RepoRef="$repo_ref" \
+      RepoRef="$repo_sha" \
       ReleaseSigningKey="$signing_key"
 
 aws cloudformation describe-stacks --stack-name "$stack_name" \

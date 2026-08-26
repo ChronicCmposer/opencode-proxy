@@ -73,22 +73,25 @@ Parameters:
     Description: Image reference embedded in opencode-proxy.tar by `make image` — must match Makefile's IMAGE_NAME.
   RepoRef:
     Type: String
-    Default: v0.0.0
-    AllowedPattern: ^(v\d+\.\d+\.\d+|[0-9a-f]{40})$
+    AllowedPattern: ^[0-9a-f]{40}$
     ConstraintDescription: >
-      Must be an immutable ref: a release tag (vMAJOR.MINOR.PATCH) or a full
-      40-character commit SHA. A mutable branch like `main` is rejected — the
-      instance fetches root-run scripts and unit files from this ref, so it
-      must not be repointable after review.
+      Must be a full 40-character commit SHA. A tag or branch is rejected: the
+      instance fetches root-run scripts and unit files from this ref at boot,
+      and only a commit SHA is content-addressed — a tag can be force-moved on
+      GitHub to point at different content, which for a root-run code path is
+      the same threat the release signature defends against. deploy.sh resolves
+      a tag or branch you pass it to its commit SHA before deployment.
     Description: >
-      Immutable git tag or full commit SHA the instance fetches a repo tarball
-      from at boot (via codeload.github.com), to pull scripts/update-image.sh
-      and the systemd/*.service|*.timer unit files. Those files in this repo
-      are the single source of truth; the instance re-fetches them once here
-      rather than embedding copies in this template, so updates to the updater
-      or unit files don't require a stack redeploy. Pinned to a fixed ref (not
-      a branch) so what runs as root at boot can't change under a deployed
-      stack — set this to the release tag you are deploying.
+      Immutable commit SHA the instance fetches a repo tarball from at boot
+      (via codeload.github.com), to pull scripts/update-image.sh and the
+      systemd/*.service|*.timer unit files. Those files in this repo are the
+      single source of truth; the instance re-fetches them once here rather
+      than embedding copies in this template, so updates to the updater or unit
+      files don't require a stack redeploy. A commit SHA is content-addressed:
+      GitHub cannot serve different bytes for it, so what runs as root at boot
+      is fixed by review of that exact commit and cannot be repointed under a
+      deployed stack — set this to the commit SHA of the release you are
+      deploying (deploy.sh does the tag-to-SHA resolution for you).
 
   ReleaseSigningKey:
     Type: String
