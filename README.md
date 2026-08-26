@@ -136,8 +136,20 @@ going forward — see "Staying up to date" in step 4.
 
 ```sh
 ./pki/issue-server.sh code.example.com                       # before you have an EIP, SANs can be added later — see below
-./cloudformation/deploy.sh opencode-proxy code.example.com my-ec2-key <your-home-ip>/32
+./cloudformation/deploy.sh opencode-proxy code.example.com my-ec2-key <your-home-ip>/32 v1.2.0
 ```
+
+The last argument is the **repo ref** the instance fetches its unit files and
+updater from at boot: it must be an **immutable** ref — a release tag
+(`vX.Y.Z`) or a full 40-char commit SHA, never a branch like `main`. Those
+files run as root at boot, so pinning them keeps what runs from shifting under
+a deployed stack. `deploy.sh` also passes the release signing **public key**
+(`scripts/release-signing.pub`) into the stack as the `ReleaseSigningKey`
+parameter — an out-of-band trust anchor. The image signature is only
+meaningful if the key that verifies it can't be swapped alongside the image;
+that's why the key comes from the template, not from the boot-time repo
+tarball. `AdminCidr` (`<your-home-ip>/32`) is validated to reject `0.0.0.0/0`
+and other internet-wide ranges — SSH is never open to the world.
 
 `deploy.sh` prints the stack outputs, including the **Elastic IP**. Two
 things then need that IP:
@@ -229,18 +241,23 @@ git add scripts/release-signing.pub && git commit -m "add release signing key"
 
 `make release` then signs `opencode-proxy.tar` with the private key and
 publishes `opencode-proxy.tar.sig` alongside it. Every host pins the public
-key (`/etc/opencode-proxy/release-signing.pub`, installed by the deploy
-scripts) and verifies the signature before importing — at first boot and on
-every auto-update. Verification is **fail-closed**: until you replace the
-placeholder `scripts/release-signing.pub` with a real key, deploys and updates
-refuse to import. Guard `signing/release.key` like the CA key; losing it means
-re-running `init-signing-key.sh` and redeploying the new public key, and
-leaking it lets an attacker forge releases.
+key (`/etc/opencode-proxy/release-signing.pub`) and verifies the signature
+before importing — at first boot and on every auto-update. On EC2 the key is
+injected as the `ReleaseSigningKey` template parameter (from
+`scripts/release-signing.pub`, passed by `deploy.sh`), **not** fetched from the
+boot-time repo tarball: the key that verifies the image must be an immutable,
+out-of-band anchor, or an attacker who can alter the repo could swap the key
+and the image together and defeat the check. Verification is **fail-closed**:
+until you replace the placeholder `scripts/release-signing.pub` with a real
+key, deploys and updates refuse to import. Guard `signing/release.key` like the
+CA key; losing it means re-running `init-signing-key.sh` and redeploying the
+new public key, and leaking it lets an attacker forge releases.
 
-> The systemd units and update script are still fetched from
-> `codeload.github.com/.../<RepoRef>` at deploy time. Pin `RepoRef`/`repo_ref`
-> to an immutable tag or commit (not the default `main`) so that path can't
-> shift under you between deploys.
+> The systemd units and update script are fetched from
+> `codeload.github.com/.../<RepoRef>` at deploy time, so `RepoRef`/`repo_ref`
+> is required to be an immutable tag (`vX.Y.Z`) or full commit SHA — a branch
+> like `main` is rejected — so that root-run path can't shift under a deployed
+> stack.
 
 ### Checking versions from a response
 

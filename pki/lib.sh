@@ -57,6 +57,11 @@ issue_leaf() {
   } > "$extfile"
 
   openssl ecparam -name prime256v1 -genkey -noout -out "$key"
+  # Restrict the private key's mode immediately, the same way init-ca.sh
+  # guards the CA key: OUT_DIR is 700, but the .key files travel (uploaded to
+  # SSM, copied to endpoints, occasionally moved out of out/), and a
+  # world-readable mode would expose them the moment they leave this dir.
+  chmod 600 "$key"
   openssl req -new -key "$key" -subj "$subj" -out "$csr"
 
   openssl x509 -req -in "$csr" -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \

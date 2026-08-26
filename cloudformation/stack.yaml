@@ -34,7 +34,15 @@ Parameters:
   AdminCidr:
     Type: String
     Description: CIDR allowed to SSH in (e.g. your home /32). Never 0.0.0.0/0.
-    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    # Enforces what the description only asked for: every octet is a real
+    # 0-255 value, the first octet is non-zero (so 0.0.0.0/... can't be
+    # entered), and the prefix length is 1-32 (so /0 — the whole internet —
+    # is rejected outright rather than merely discouraged).
+    AllowedPattern: ^(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/([1-9]|[12]\d|3[0-2])$
+    ConstraintDescription: >
+      Must be a valid IPv4 CIDR with a non-zero network and a /1-/32 prefix
+      (e.g. 203.0.113.4/32). 0.0.0.0/0 and other internet-wide ranges are
+      rejected — SSH must never be open to the world.
   DomainName:
     Type: String
     Description: The DNS name you will point at the stack's Elastic IP (informational; used only in tags/outputs).
@@ -65,14 +73,34 @@ Parameters:
     Description: Image reference embedded in opencode-proxy.tar by `make image` — must match Makefile's IMAGE_NAME.
   RepoRef:
     Type: String
-    Default: main
+    Default: v0.0.0
+    AllowedPattern: ^(v\d+\.\d+\.\d+|[0-9a-f]{40})$
+    ConstraintDescription: >
+      Must be an immutable ref: a release tag (vMAJOR.MINOR.PATCH) or a full
+      40-character commit SHA. A mutable branch like `main` is rejected — the
+      instance fetches root-run scripts and unit files from this ref, so it
+      must not be repointable after review.
     Description: >
-      Git tag/branch/commit the instance fetches a repo tarball from at
-      boot (via codeload.github.com), to pull scripts/update-image.sh and
-      the systemd/*.service|*.timer unit files. Those files in this repo
-      are the single source of truth; the instance re-fetches them once
-      here rather than embedding copies in this template, so updates to
-      the updater or unit files don't require a stack redeploy.
+      Immutable git tag or full commit SHA the instance fetches a repo tarball
+      from at boot (via codeload.github.com), to pull scripts/update-image.sh
+      and the systemd/*.service|*.timer unit files. Those files in this repo
+      are the single source of truth; the instance re-fetches them once here
+      rather than embedding copies in this template, so updates to the updater
+      or unit files don't require a stack redeploy. Pinned to a fixed ref (not
+      a branch) so what runs as root at boot can't change under a deployed
+      stack — set this to the release tag you are deploying.
+
+  ReleaseSigningKey:
+    Type: String
+    NoEcho: false
+    Description: >
+      PEM-encoded PUBLIC half of the release signing key
+      (scripts/release-signing.pub). Passed in through the template — an
+      immutable, out-of-band trust anchor — instead of being fetched from the
+      repo tarball at boot. The image signature is only meaningful if the key
+      verifying it can't be swapped by whoever supplies the image; fetching
+      the key from the same mutable source as the artifact would let an
+      attacker who can push to the repo replace both and defeat the check.
 
 Resources:
   InstanceRole:
@@ -95,6 +123,16 @@ Resources:
               - Effect: Allow
                 Action: kms:Decrypt
                 Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/ssm
+                # The AWS-managed SSM key encrypts every default SecureString
+                # in the account, so an unconditional Decrypt grant would let a
+                # leaked instance credential decrypt unrelated secrets. Scope
+                # it: only decrypts brokered by SSM, and only for parameters
+                # under this stack's cert prefix.
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+                  StringLike:
+                    kms:EncryptionContext:PARAMETER_ARN: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CertParamPrefix}/*
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -131,6 +169,15 @@ Resources:
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref InstanceProfile
       SecurityGroups: [!Ref SecurityGroup]
+      # Require IMDSv2 (token-authenticated metadata): the instance is
+      # internet-facing on :443 and its role can read the server private key
+      # from SSM, so an SSRF that reaches 169.254.169.254 must not be able to
+      # lift the role's credentials with a plain GET. HopLimit 1 keeps the
+      # token from being proxied out of a container network.
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs: { VolumeType: gp3, VolumeSize: 8, DeleteOnTermination: true }
@@ -171,8 +218,21 @@ Resources:
           tar -xzf /tmp/opencode-proxy-src.tar.gz -C /tmp/opencode-proxy-src --strip-components=1
 
           # Release signing public key: the image is verified against this
-          # before it ever runs as root. See scripts/init-signing-key.sh.
-          install -m 644 /tmp/opencode-proxy-src/scripts/release-signing.pub /etc/opencode-proxy/release-signing.pub
+          # before it ever runs as root. It comes from the ReleaseSigningKey
+          # template parameter (an immutable, out-of-band trust anchor), NOT
+          # from the fetched repo tarball — fetching the verifying key from the
+          # same mutable source as the image would let anyone who can alter that
+          # source swap both and defeat the signature check. See
+          # scripts/init-signing-key.sh.
+          # Fn::Sub inlines the PEM here; the leading indentation of this YAML
+          # block lands on the substituted lines, so strip per-line leading
+          # whitespace (PEM has none of its own) before writing the key out.
+          cat > /tmp/release-signing.pub <<'PUBKEY'
+          ${ReleaseSigningKey}
+          PUBKEY
+          sed 's/^[[:space:]]*//' /tmp/release-signing.pub > /etc/opencode-proxy/release-signing.pub
+          rm -f /tmp/release-signing.pub
+          chmod 644 /etc/opencode-proxy/release-signing.pub
 
           # Verify the image signature at first boot too, not just on later
           # updates — a same-origin checksum proves integrity, not authenticity.
