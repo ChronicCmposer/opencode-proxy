@@ -1,0 +1,14 @@
+{
+  "backoff-min": "1s",
+  "backoff-max": "30s",
+  "keepalive-interval": "30s",
+  "stream-open-timeout": "2m",
+  "read-header-timeout": "10s",
+  "idle-timeout": "2m",
+  "max-concurrent-streams": 256,
+  "max-streams-per-cert": 64,
+  "max-stream-duration": "1h",
+  "max-request-bytes": 33554432,
+  "max-header-bytes": 1048576,
+  "allowed-path-prefixes": ["/"]
+}

@@ -1,0 +1,16 @@
+# Used only by init-ca.sh — leaf certs build their extension file inline
+# in lib.sh instead, since their SANs/OUs vary per invocation.
+
+[req]
+distinguished_name = dn
+prompt              = no
+default_md          = sha256
+
+[dn]
+O  = opencode-proxy
+CN = opencode-proxy root CA
+
+[v3_ca]
+basicConstraints       = critical, CA:true
+keyUsage                = critical, keyCertSign, cRLSign
+subjectKeyIdentifier    = hash

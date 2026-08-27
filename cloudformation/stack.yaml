@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  opencode-proxy remote host: a single small arm64 EC2 instance (latest
+  Amazon Linux 2023, resolved via SSM at launch) behind an Elastic IP,
+  running the --remote half of the proxy as an OCI container under
+  containerd — no Docker on the instance, just `ctr`. mTLS is the only
+  access control (the security group leaves 443 open to the internet); SSH
+  is restricted to AdminCidr. The container image is published as a
+  GitHub Release asset (opencode-proxy.tar, built by `make image` — see
+  README.md) and imported directly into containerd's content store.
+  Certificates are pulled from SSM Parameter Store at boot rather than
+  baked into the image or template, since CloudFormation cannot author
+  SecureString parameters itself — see README.md for the upload step that
+  must happen before this stack is deployed.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+    AllowedValues: [t4g.nano, t4g.micro, t3.micro, t3.small]
+    Description: >
+      t4g.nano (2 vCPU burstable, 0.5GB RAM, ~$3/mo) is the default: this
+      host runs one static Go binary handling one home's tunnel and
+      occasional phone requests, well under a nano's burst credits and RAM.
+      containerd itself adds a modest fixed memory floor (~30-50MB) on top
+      of the proxy process, still comfortably inside 0.5GB. Bump to
+      t4g.micro (1GB) if you see OOM kills in `journalctl -u containerd` or
+      plan to add more concurrent devices/streams than "a phone or two."
+      t3.* variants exist only as an x86 fallback if arm64 capacity is ever
+      unavailable in your region.
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 key pair for emergency SSH access.
+  AdminCidr:
+    Type: String
+    Description: CIDR allowed to SSH in (e.g. your home /32). Never 0.0.0.0/0.
+    # Enforces what the description only asked for: every octet is a real
+    # 0-255 value, the first octet is non-zero (so 0.0.0.0/... can't be
+    # entered), and the prefix length is 1-32 (so /0 — the whole internet —
+    # is rejected outright rather than merely discouraged).
+    AllowedPattern: ^(25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|[1-9])(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/([1-9]|[12]\d|3[0-2])$
+    ConstraintDescription: >
+      Must be a valid IPv4 CIDR with a non-zero network and a /1-/32 prefix
+      (e.g. 203.0.113.4/32). 0.0.0.0/0 and other internet-wide ranges are
+      rejected — SSH must never be open to the world.
+  DomainName:
+    Type: String
+    Description: The DNS name you will point at the stack's Elastic IP (informational; used only in tags/outputs).
+  TunnelCN:
+    Type: String
+    Default: home-mac
+    AllowedPattern: ".+"
+    ConstraintDescription: TunnelCN must not be empty — the remote refuses to start without a pinned tunnel identity.
+    Description: >
+      Common Name of the home tunnel certificate — must match the CN passed to
+      pki/issue-tunnel.sh (its default is "home-mac"). The remote pins the
+      tunnel upgrade to this one identity, so only the enrolled home endpoint
+      can register the tunnel; any other tunnel-role cert is refused.
+  CertParamPrefix:
+    Type: String
+    Default: /opencode-proxy/server
+    Description: >
+      SSM Parameter Store path prefix holding the server cert material,
+      uploaded by pki/issue-server.sh before this stack is deployed. Expects
+      SecureString parameters at {prefix}/ca.crt, {prefix}/server.crt,
+      {prefix}/server.key.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: >
+      Resolved via SSM public parameter at every deploy/update, so the
+      instance always launches on the latest AL2023 arm64 AMI rather than
+      one pinned at template-authoring time.
+  ImageTarURL:
+    Type: String
+    Default: https://github.com/ChronicCmposer/opencode-proxy/releases/latest/download/opencode-proxy.tar
+    Description: >
+      Where the instance fetches the --remote OCI image from. Produced by
+      `make image` and published as a GitHub Release asset.
+  ImageRef:
+    Type: String
+    Default: docker.io/library/opencode-proxy:latest
+    Description: Image reference embedded in opencode-proxy.tar by `make image` — must match Makefile's IMAGE_NAME.
+  RepoRef:
+    Type: String
+    AllowedPattern: ^[0-9a-f]{40}$
+    ConstraintDescription: >
+      Must be a full 40-character commit SHA. A tag or branch is rejected: the
+      instance fetches root-run scripts and unit files from this ref at boot,
+      and only a commit SHA is content-addressed — a tag can be force-moved on
+      GitHub to point at different content, which for a root-run code path is
+      the same threat the release signature defends against. deploy.sh resolves
+      a tag or branch you pass it to its commit SHA before deployment.
+    Description: >
+      Immutable commit SHA the instance fetches a repo tarball from at boot
+      (via codeload.github.com), to pull scripts/update-image.sh and the
+      systemd/*.service|*.timer unit files. Those files in this repo are the
+      single source of truth; the instance re-fetches them once here rather
+      than embedding copies in this template, so updates to the updater or unit
+      files don't require a stack redeploy. A commit SHA is content-addressed:
+      GitHub cannot serve different bytes for it, so what runs as root at boot
+      is fixed by review of that exact commit and cannot be repointed under a
+      deployed stack — set this to the commit SHA of the release you are
+      deploying (deploy.sh does the tag-to-SHA resolution for you).
+
+  ReleaseSigningKey:
+    Type: String
+    NoEcho: false
+    Description: >
+      PEM-encoded PUBLIC half of the release signing key
+      (scripts/release-signing.pub). Passed in through the template — an
+      immutable, out-of-band trust anchor — instead of being fetched from the
+      repo tarball at boot. The image signature is only meaningful if the key
+      verifying it can't be swapped by whoever supplies the image; fetching
+      the key from the same mutable source as the artifact would let an
+      attacker who can push to the repo replace both and defeat the check.
+
+Resources:
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadCertParams
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CertParamPrefix}/*
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/ssm
+                # The AWS-managed SSM key encrypts every default SecureString
+                # in the account, so an unconditional Decrypt grant would let a
+                # leaked instance credential decrypt unrelated secrets. Scope
+                # it: only decrypts brokered by SSM, and only for parameters
+                # under this stack's cert prefix.
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+                  StringLike:
+                    kms:EncryptionContext:PARAMETER_ARN: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CertParamPrefix}/*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: opencode-proxy remote host
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTPS — mTLS is the real access control, not this rule.
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+          Description: Emergency SSH from AdminCidr only.
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups: [!Ref SecurityGroup]
+      # Require IMDSv2 (token-authenticated metadata): the instance is
+      # internet-facing on :443 and its role can read the server private key
+      # from SSM, so an SSRF that reaches 169.254.169.254 must not be able to
+      # lift the role's credentials with a plain GET. HopLimit 1 keeps the
+      # token from being proxied out of a container network.
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeType: gp3, VolumeSize: 8, DeleteOnTermination: true }
+      Tags:
+        - { Key: Name, Value: !Sub "opencode-proxy-${DomainName}" }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          trap '/opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}' EXIT
+
+          dnf install -y awscli containerd tar openssl || yum install -y awscli containerd tar openssl
+          systemctl enable --now containerd
+
+          mkdir -p /etc/opencode-proxy
+          for f in ca.crt server.crt server.key; do
+            aws ssm get-parameter --name "${CertParamPrefix}/$f" --with-decryption \
+              --region ${AWS::Region} --query Parameter.Value --output text \
+              > "/etc/opencode-proxy/$f"
+          done
+          chmod 600 /etc/opencode-proxy/server.key
+          chmod 644 /etc/opencode-proxy/ca.crt /etc/opencode-proxy/server.crt
+
+          # Certificate revocation list (--revoked). Created empty so the
+          # service starts; add one hex serial per line to cut off a lost
+          # device cert without rotating the whole CA, no redeploy needed.
+          touch /etc/opencode-proxy/revoked.txt
+          chmod 644 /etc/opencode-proxy/revoked.txt
+
+          # Fetch this ref's systemd units, update script, and the release
+          # signing public key as a tarball rather than embedding them in this
+          # template, so updates to them don't require a stack redeploy. Done
+          # before the image import so the signing key is in place to verify
+          # it. Cleaned up at the end.
+          curl -fsSL -o /tmp/opencode-proxy-src.tar.gz \
+            "https://codeload.github.com/ChronicCmposer/opencode-proxy/tar.gz/${RepoRef}"
+          mkdir -p /tmp/opencode-proxy-src
+          tar -xzf /tmp/opencode-proxy-src.tar.gz -C /tmp/opencode-proxy-src --strip-components=1
+
+          # Release signing public key: the image is verified against this
+          # before it ever runs as root. It comes from the ReleaseSigningKey
+          # template parameter (an immutable, out-of-band trust anchor), NOT
+          # from the fetched repo tarball — fetching the verifying key from the
+          # same mutable source as the image would let anyone who can alter that
+          # source swap both and defeat the signature check. See
+          # scripts/init-signing-key.sh.
+          # Fn::Sub inlines the PEM here; the leading indentation of this YAML
+          # block lands on the substituted lines, so strip per-line leading
+          # whitespace (PEM has none of its own) before writing the key out.
+          cat > /tmp/release-signing.pub <<'PUBKEY'
+          ${ReleaseSigningKey}
+          PUBKEY
+          sed 's/^[[:space:]]*//' /tmp/release-signing.pub > /etc/opencode-proxy/release-signing.pub
+          rm -f /tmp/release-signing.pub
+          chmod 644 /etc/opencode-proxy/release-signing.pub
+
+          # Verify the image signature at first boot too, not just on later
+          # updates — a same-origin checksum proves integrity, not authenticity.
+          curl -fsSL -o /tmp/opencode-proxy.tar "${ImageTarURL}"
+          curl -fsSL -o /tmp/opencode-proxy.tar.sig "${ImageTarURL}.sig"
+          openssl pkeyutl -verify -rawin -pubin -inkey /etc/opencode-proxy/release-signing.pub \
+            -in /tmp/opencode-proxy.tar -sigfile /tmp/opencode-proxy.tar.sig
+          ctr images import /tmp/opencode-proxy.tar
+          sha256sum /tmp/opencode-proxy.tar | awk '{print $1}' > /etc/opencode-proxy/current.sha256
+          rm -f /tmp/opencode-proxy.tar /tmp/opencode-proxy.tar.sig
+
+          cat > /etc/opencode-proxy/remote.env <<ENV
+          IMAGE_REF=${ImageRef}
+          TUNNEL_CN=${TunnelCN}
+          ENV
+
+          # Shipped from the repo rather than written inline so the defaults
+          # have one source of truth. Most keys are optional — delete one and
+          # the binary's built-in default applies — except allowed-path-prefixes,
+          # which the --remote half requires (default-deny); the shipped ["/"]
+          # allows every path deliberately and should be narrowed to opencode's
+          # actual surface where practical.
+          install -m 644 /tmp/opencode-proxy-src/config.example.json /etc/opencode-proxy/config.json
+
+          install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy.service /etc/systemd/system/opencode-proxy.service
+
+          systemctl daemon-reload
+          systemctl enable --now opencode-proxy
+
+          install -m 755 /tmp/opencode-proxy-src/scripts/update-image.sh /usr/local/bin/opencode-proxy-update.sh
+
+          cat > /etc/opencode-proxy/update.env <<ENV
+          IMAGE_TAR_URL=${ImageTarURL}
+          IMAGE_REF=${ImageRef}
+          SERVICE_NAME=opencode-proxy
+          STATE_DIR=/etc/opencode-proxy
+          ENV
+
+          install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy-update.service /etc/systemd/system/opencode-proxy-update.service
+          install -m 644 /tmp/opencode-proxy-src/systemd/opencode-proxy-update.timer /etc/systemd/system/opencode-proxy-update.timer
+
+          rm -rf /tmp/opencode-proxy-src.tar.gz /tmp/opencode-proxy-src
+
+          systemctl daemon-reload
+          systemctl enable --now opencode-proxy-update.timer
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref Instance
+      EIP: !Ref ElasticIP
+
+Outputs:
+  ElasticIP:
+    Description: Point DomainName's A record at this IP.
+    Value: !Ref ElasticIP
+  InstanceId:
+    Value: !Ref Instance

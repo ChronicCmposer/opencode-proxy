@@ -1,0 +1,13 @@
+[Unit]
+Description=Run opencode-proxy-update.service every 6 hours
+
+[Timer]
+# Give the host a few minutes to finish booting/settling before the first
+# check, then every 6h after that. Persistent=true catches up on a missed
+# run (e.g. the host was off) at next boot instead of waiting a full 6h.
+OnBootSec=15min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

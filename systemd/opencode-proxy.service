@@ -1,0 +1,29 @@
+[Unit]
+Description=opencode-proxy remote (containerd)
+After=network-online.target containerd.service
+Wants=network-online.target
+Requires=containerd.service
+
+[Service]
+EnvironmentFile=/etc/opencode-proxy/remote.env
+# ctr run keeps the earlier container/task names around after a stop or
+# crash; clear them before each start so Restart=always doesn't fail with
+# "already exists".
+ExecStartPre=-/usr/bin/ctr task kill opencode-proxy
+ExecStartPre=-/usr/bin/ctr task rm opencode-proxy
+ExecStartPre=-/usr/bin/ctr container rm opencode-proxy
+ExecStart=/usr/bin/ctr run --rm --net-host \
+  --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \
+  ${IMAGE_REF} opencode-proxy \
+  --remote --addr :443 \
+  --tunnel-cn ${TUNNEL_CN} \
+  --config /etc/opencode-proxy/config.json \
+  --ca /etc/opencode-proxy/ca.crt \
+  --cert /etc/opencode-proxy/server.crt \
+  --key /etc/opencode-proxy/server.key \
+  --revoked /etc/opencode-proxy/revoked.txt
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+pki/out/
+*.log
+/version.go
+/opencode-proxy
+/opencode-proxy.tar
+/opencode-proxy.tar.sha256
+/opencode-proxy.tar.sig
+/signing/
+plans/
+1
+out.txt
+grant-buildkit-access.sh
+gh_auth_login.py

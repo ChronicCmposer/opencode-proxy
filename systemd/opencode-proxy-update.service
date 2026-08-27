@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for and apply opencode-proxy image updates
+After=network-online.target containerd.service
+Wants=network-online.target
+Requires=containerd.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/opencode-proxy/update.env
+ExecStart=/usr/local/bin/opencode-proxy-update.sh
