@@ -5,9 +5,9 @@
 # Usage:
 #   cloudformation/deploy.sh <stack-name> <domain-name> <key-pair-name> <admin-cidr> <repo-ref> [tunnel-cn] [instance-type]
 #
-# The optional [instance-type] overrides the InstanceType template parameter
-# (default t4g.nano); changing it forces an instance replacement, which can be
-# used to pick up new boot material.
+# deploy.sh ALWAYS passes an explicit InstanceType, defaulting to t4g.micro
+# (mirroring the InstanceType parameter default in stack.yaml) so every deploy
+# is deterministic; passing a 7th arg like t4g.nano overrides that default.
 # <repo-ref> is anything git can resolve in your local checkout — a release
 # tag (vX.Y.Z), a branch, or a commit SHA. It is resolved here, on your
 # trusted machine, to the full commit SHA it currently names, and that SHA is
@@ -18,7 +18,7 @@
 # below before confirming a production deploy.
 #
 # Example:
-#   cloudformation/deploy.sh opencode-proxy code.example.com my-ec2-key 203.0.113.9/32 v1.2.0 t4g.micro
+#   cloudformation/deploy.sh opencode-proxy code.example.com my-ec2-key 203.0.113.9/32 v1.2.0 home-mac t4g.micro
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -31,7 +31,7 @@ stack_name="$1" domain="$2" key_name="$3" admin_cidr="$4" repo_ref="$5"
 # default is "home-mac"); the remote pins the tunnel upgrade to it. Override
 # only if you issued the tunnel cert with a different CN.
 tunnel_cn="${6:-home-mac}"
-instance_type="${7:-}"
+instance_type="${7:-t4g.micro}"
 
 # Resolve the ref to the full 40-char commit SHA it points at right now. The
 # stack pins that SHA (RepoRef's AllowedPattern rejects anything else), so what
