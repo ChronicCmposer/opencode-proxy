@@ -146,6 +146,13 @@ Resources:
                     kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
                   StringLike:
                     kms:EncryptionContext:PARAMETER_ARN: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${CertParamPrefix}/*
+        - PolicyName: SignalCloudFormation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:SignalResource
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -219,7 +226,7 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: Public HTTPS — mTLS is the real access control, not this rule.
+          Description: "Public HTTPS: mTLS is the real access control, not this rule."
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
@@ -259,7 +266,10 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -eux
-          trap '/opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}' EXIT
+          # Boot signal via the AWS CLI (installed above) instead of
+          # cfn-signal: the aws-cfn-bootstrap helper scripts are not reliably
+          # present on Amazon Linux 2023.
+          trap 'rc=$?; status=SUCCESS; if [ "$rc" -ne 0 ]; then status=FAILURE; fi; aws cloudformation signal-resource --stack-name ${AWS::StackName} --logical-resource-id Instance --unique-id "$(hostname)-cfn-boot" --region ${AWS::Region} --status "$status"' EXIT
 
           dnf install -y awscli containerd tar openssl || yum install -y awscli containerd tar openssl
           systemctl enable --now containerd
