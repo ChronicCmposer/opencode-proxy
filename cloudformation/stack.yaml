@@ -240,7 +240,7 @@ Resources:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
-        Timeout: PT5M
+        Timeout: PT20M
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref LatestAmiId
