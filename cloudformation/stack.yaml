@@ -167,9 +167,9 @@ Resources:
           ToPort: 22
           CidrIp: !Ref AdminCidr
           Description: Emergency SSH from AdminCidr only.
-      SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
+      # No explicit SecurityGroupEgress: CloudFormation rejects it without a
+      # VpcId, and a new security group already allows all outbound traffic by
+      # default — identical behavior, one less thing to pin.
 
   Instance:
     Type: AWS::EC2::Instance
