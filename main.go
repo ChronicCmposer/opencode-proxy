@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -132,18 +133,7 @@ func run() error {
 		// it ends each session by closing the yamux session (this Serve
 		// call's Listener), which just makes Serve return; the Server
 		// itself is untouched.
-		//
-		// ReadHeaderTimeout guards against a slow-header (Slowloris) peer
-		// tying up a goroutine indefinitely. No ReadTimeout/WriteTimeout:
-		// this side proxies opencode's own responses, including the
-		// long-lived GET /event SSE stream, so a whole-request deadline
-		// would cut those off.
-		server := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-			IdleTimeout:       cfg.IdleTimeout,
-			MaxHeaderBytes:    cfg.MaxHeaderBytes,
-		}
+		server := newProxyServer(handler, cfg, "", nil)
 		client := NewLocalClient(f.remoteURL, logger, dialer, server, tunnelFactory, backoff)
 		return client.Run(ctx)
 	}
@@ -182,19 +172,7 @@ func run() error {
 	}
 	handler := NewRemoteReverseProxy(ctx, reg, tunnelFactory, revocation, policy, logger)
 	handler = WithVersionHeader(RemoteVersionHeader, Version, handler)
-	// ReadHeaderTimeout bounds the slow-header (Slowloris) window on a
-	// listener that faces the public internet. No ReadTimeout/WriteTimeout:
-	// device requests stream opencode's responses (notably the long-lived
-	// GET /event SSE stream) back through the tunnel, and a whole-request
-	// deadline would sever those.
-	srv := &http.Server{
-		Addr:              f.addr,
-		TLSConfig:         tlsConf,
-		Handler:           handler,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    cfg.MaxHeaderBytes,
-	}
+	srv := newProxyServer(handler, cfg, f.addr, tlsConf)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -205,6 +183,23 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// newProxyServer builds the http.Server both halves share: the same
+// ReadHeaderTimeout (bounds the slow-header/Slowloris window), IdleTimeout
+// and MaxHeaderBytes, with addr/tlsConf empty for the local side. No
+// ReadTimeout/WriteTimeout, on purpose: both halves proxy opencode's own
+// responses, including the long-lived GET /event SSE stream, so a
+// whole-request deadline would sever those streams.
+func newProxyServer(handler http.Handler, cfg Config, addr string, tlsConf *tls.Config) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		TLSConfig:         tlsConf,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
+	}
 }
 
 // requireRemotePolicy enforces the remote half's default-deny posture, checked

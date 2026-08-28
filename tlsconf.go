@@ -34,6 +34,14 @@ var ErrWrongRole = errors.New("client certificate is not valid for this endpoint
 // tunnel and device certs alike, before any request-level role check.
 var ErrRevoked = errors.New("client certificate has been revoked")
 
+// errNoVerifiedChain is returned when VerifyConnection runs with no verified
+// chain to inspect. It is distinct from ErrRevoked on purpose: an unverified
+// chain is not a revocation, and conflating the two would let errors.Is
+// misreport a defensive fallback as a genuine revocation. ClientAuth's
+// RequireAndVerifyClientCert makes this branch unreachable in practice, but
+// the callback should still not lie if it ever fires.
+var errNoVerifiedChain = errors.New("no verified chain to check")
+
 // RevokedSerials is the set of certificate serial numbers that must be
 // rejected even though they still chain to the CA and haven't expired. The
 // codebase issues no CRL/OCSP responder, so this file-backed denylist is what
@@ -254,7 +262,7 @@ func verifyNotRevoked(revocation *RevocationList) func(tls.ConnectionState) erro
 	}
 	return func(cs tls.ConnectionState) error {
 		if len(cs.VerifiedChains) == 0 || len(cs.VerifiedChains[0]) == 0 {
-			return ErrRevoked
+			return errNoVerifiedChain
 		}
 		leaf := cs.VerifiedChains[0][0]
 		if revocation.IsRevoked(serialOf(leaf)) {
