@@ -19,15 +19,13 @@ Parameters:
     Default: t4g.micro
     AllowedValues: [t4g.nano, t4g.micro, t3.micro, t3.small]
     Description: >
-      t4g.nano (2 vCPU burstable, 0.5GB RAM, ~$3/mo) is the default: this
-      host runs one static Go binary handling one home's tunnel and
-      occasional phone requests, well under a nano's burst credits and RAM.
-      containerd itself adds a modest fixed memory floor (~30-50MB) on top
-      of the proxy process, still comfortably inside 0.5GB. Bump to
-      t4g.micro (1GB) if you see OOM kills in `journalctl -u containerd` or
-      plan to add more concurrent devices/streams than "a phone or two."
-      t3.* variants exist only as an x86 fallback if arm64 capacity is ever
-      unavailable in your region.
+      t4g.micro (2 vCPU burstable, 1GB RAM, ~$4.50/mo) is the default: the
+      deploy-time boot script installs awscli+containerd and pulls the image,
+      and this host runs one static Go binary handling one home tunnel and
+      occasional phone requests. t4g.nano (0.5GB) can be selected to save cost
+      if you never see OOM kills in `journalctl -u containerd`. t3.* variants
+      exist only as an x86 fallback if arm64 capacity is ever unavailable in
+      your region.
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: EC2 key pair for emergency SSH access.
