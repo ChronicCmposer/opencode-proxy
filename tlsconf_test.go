@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -334,6 +335,8 @@ func TestVerifyNotRevoked(t *testing.T) {
 	// A connection with no verified chain is rejected rather than trusted.
 	if err := check(tls.ConnectionState{}); err == nil {
 		t.Error("empty verified chain should be rejected")
+	} else if errors.Is(err, ErrRevoked) {
+		t.Error("empty verified chain should not be reported as revoked")
 	}
 }
 

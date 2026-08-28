@@ -196,13 +196,29 @@ func (p *perCertLimiter) release(serial string) {
 	}
 }
 
+// RemoteProxy is the request pipeline behind NewRemoteReverseProxy, split into
+// tunnelUpgrade and deviceRequest so the two dispatch paths read as linear
+// guard checklists instead of one ~110-line closure.
+type RemoteProxy struct {
+	ctx           context.Context
+	reg           *SessionRegistry
+	tunnelFactory *TunnelFactory
+	revocation    *RevocationList
+	policy        RemoteProxyPolicy
+	l             *log.Logger
+	sem           chan struct{}
+	perCert       *perCertLimiter
+	proxy         *httputil.ReverseProxy
+}
+
 // NewRemoteReverseProxy splits tunnel upgrades on policy.TunnelPath from
 // ordinary device requests, enforcing each side's required client-certificate
 // role (and, when configured, the pinned tunnel CN and device path allowlist)
 // before dispatch; non-tunnel requests are forwarded through the reverse proxy
-// it builds internally. ctx governs an accepted tunnel's lifetime: a hijacked
-// connection is invisible to http.Server.Shutdown, so without it the session
-// would only end when the process exits.
+// it builds internally. The returned handler dispatches to RemoteProxy's
+// tunnelUpgrade and deviceRequest pipelines. ctx governs an accepted tunnel's
+// lifetime: a hijacked connection is invisible to http.Server.Shutdown, so
+// without it the session would only end when the process exits.
 func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFactory *TunnelFactory, revocation *RevocationList, policy RemoteProxyPolicy, l *log.Logger) http.Handler {
 	// A buffered channel used as a counting semaphore: a device request must
 	// take a slot before it opens a yamux stream, so no more than
@@ -238,116 +254,140 @@ func NewRemoteReverseProxy(ctx context.Context, reg *SessionRegistry, tunnelFact
 			http.Error(w, "no tunnel connected", http.StatusServiceUnavailable)
 		},
 	}
+	p := &RemoteProxy{
+		ctx:           ctx,
+		reg:           reg,
+		tunnelFactory: tunnelFactory,
+		revocation:    revocation,
+		policy:        policy,
+		l:             l,
+		sem:           sem,
+		perCert:       perCert,
+		proxy:         proxy,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state := r.TLS
-
-		if r.URL.Path == policy.TunnelPath {
-			if err := VerifyPeerRole(state, OUTunnel); err != nil {
-				l.Printf("rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			// When a tunnel CN is pinned, role alone isn't enough: only the one
-			// enrolled home endpoint may register as the tunnel, so a stolen or
-			// duplicate tunnel-role cert can't take over the registry.
-			if policy.TunnelCN != "" {
-				if err := VerifyPeerCN(state, policy.TunnelCN); err != nil {
-					l.Printf("rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
-					http.Error(w, "forbidden", http.StatusForbidden)
-					return
-				}
-			}
-			acceptTunnel(ctx, w, r, reg, tunnelFactory, l)
+		if r.URL.Path == p.policy.TunnelPath {
+			p.tunnelUpgrade(w, r)
 			return
 		}
-
-		if err := VerifyPeerRole(state, OUDevice); err != nil {
-			l.Printf("rejected request from %s: %v", GetPeerSubjectCN(state), err)
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
-		leaf := leafCertOf(state)
-
-		// Device revocation liveness: VerifyConnection only checked this cert at
-		// handshake, so a cert revoked afterward is still refused here, on its
-		// next request over an already-established keep-alive connection, rather
-		// than serving until the connection drops and re-handshakes.
-		if revocation != nil && leaf != nil && revocation.IsRevoked(serialOf(leaf)) {
-			l.Printf("rejected request from %s: certificate revoked", GetPeerSubjectCN(state))
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
-		// Tunnel revocation liveness: if the connected tunnel's own certificate
-		// has since been revoked, tear it down instead of forwarding this
-		// request through it (the tunnel never re-handshakes on its own).
-		if reg.CloseCurrentIfRevoked(revocation) {
-			l.Printf("closed tunnel: its certificate is now revoked")
-			http.Error(w, "no tunnel connected", http.StatusServiceUnavailable)
-			return
-		}
-
-		// Reject a non-normalized path before the allowlist decides anything: Go
-		// forwards r.URL.Path verbatim, so a device cert scoped to "/api" could
-		// otherwise send "/api/../admin" (or its %2e%2e form, already decoded
-		// into Path here), pass the prefix check, and have opencode resolve it
-		// back to "/admin". A real SSE/API client never sends "..", "." or "//"
-		// segments, so rejecting the un-clean form closes the bypass without
-		// silently rewriting request semantics.
-		if !pathIsNormalized(r.URL.Path) {
-			l.Printf("rejected request from %s: non-normalized path %q", GetPeerSubjectCN(state), r.URL.Path)
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		// A configured path allowlist bounds what a device cert can reach: a
-		// request outside it is refused here, before a tunnel stream is ever
-		// opened. An empty allowlist permits everything (the default).
-		if !pathAllowed(policy.AllowedPathPrefixes, r.URL.Path) {
-			l.Printf("rejected request from %s: path %q is not on the allowlist", GetPeerSubjectCN(state), r.URL.Path)
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
-		// Per-certificate fairness: refuse before taking a global slot so one
-		// identity's flood can't consume the shared budget. serialOf keys on the
-		// leaf that already passed the role check above.
-		serial := ""
-		if leaf != nil {
-			serial = serialOf(leaf)
-		}
-		if !perCert.acquire(serial) {
-			l.Printf("rejected request from %s: per-certificate stream cap of %d reached", GetPeerSubjectCN(state), policy.MaxStreamsPerCert)
-			http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
-			return
-		}
-		defer perCert.release(serial)
-
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		default:
-			l.Printf("rejected request from %s: %d concurrent requests already in flight", GetPeerSubjectCN(state), policy.MaxConcurrentStreams)
-			http.Error(w, "too many concurrent requests", http.StatusServiceUnavailable)
-			return
-		}
-
-		// Bound the stream's lifetime so a genuinely-infinite SSE hog is
-		// eventually recycled (and can't outlive its cert's revocation forever),
-		// while normal long polls under the cap survive. Zero leaves it unbounded.
-		if policy.MaxStreamDuration > 0 {
-			ctx, cancel := context.WithTimeout(r.Context(), policy.MaxStreamDuration)
-			defer cancel()
-			r = r.WithContext(ctx)
-		}
-
-		// Cap the request body so a single device can't stream an unbounded
-		// upload through the tunnel. Only the body is bounded; the SSE
-		// response stream back the other way is untouched.
-		r.Body = http.MaxBytesReader(w, r.Body, policy.MaxRequestBytes)
-		proxy.ServeHTTP(w, r)
+		p.deviceRequest(w, r)
 	})
+}
+
+// tunnelUpgrade handles the one path that is a tunnel connection upgrade: it
+// requires the tunnel OU role (and the pinned CN, when configured) before
+// handing the hijacked connection to acceptTunnel.
+func (p *RemoteProxy) tunnelUpgrade(w http.ResponseWriter, r *http.Request) {
+	state := r.TLS
+
+	if err := VerifyPeerRole(state, OUTunnel); err != nil {
+		p.reject(w, http.StatusForbidden, "rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
+		return
+	}
+	// When a tunnel CN is pinned, role alone isn't enough: only the one
+	// enrolled home endpoint may register as the tunnel, so a stolen or
+	// duplicate tunnel-role cert can't take over the registry.
+	if p.policy.TunnelCN != "" {
+		if err := VerifyPeerCN(state, p.policy.TunnelCN); err != nil {
+			p.reject(w, http.StatusForbidden, "rejected tunnel upgrade from %s: %v", GetPeerSubjectCN(state), err)
+			return
+		}
+	}
+	acceptTunnel(p.ctx, w, r, p.reg, p.tunnelFactory, p.l)
+}
+
+// deviceRequest runs every non-tunnel request through the guard checklist
+// before it may open a tunnel stream: device role, revocation liveness on
+// both the requesting cert and the connected tunnel, a normalized
+// allowlisted path, then the per-cert and global stream budgets, the stream
+// lifetime bound and the body cap, and finally the proxy forward itself.
+func (p *RemoteProxy) deviceRequest(w http.ResponseWriter, r *http.Request) {
+	state := r.TLS
+
+	if err := VerifyPeerRole(state, OUDevice); err != nil {
+		p.reject(w, http.StatusForbidden, "rejected request from %s: %v", GetPeerSubjectCN(state), err)
+		return
+	}
+
+	leaf := leafCertOf(state)
+
+	// Device revocation liveness: VerifyConnection only checked this cert at
+	// handshake, so a cert revoked afterward is still refused here, on its
+	// next request over an already-established keep-alive connection, rather
+	// than serving until the connection drops and re-handshakes.
+	if p.revocation != nil && p.revocation.IsRevoked(serialOf(leaf)) {
+		p.reject(w, http.StatusForbidden, "rejected request from %s: certificate revoked", GetPeerSubjectCN(state))
+		return
+	}
+
+	// Tunnel revocation liveness: if the connected tunnel's own certificate
+	// has since been revoked, tear it down instead of forwarding this
+	// request through it (the tunnel never re-handshakes on its own).
+	if p.reg.CloseCurrentIfRevoked(p.revocation) {
+		p.reject(w, http.StatusServiceUnavailable, "closed tunnel: its certificate is now revoked")
+		return
+	}
+
+	// Reject a non-normalized path before the allowlist decides anything: Go
+	// forwards r.URL.Path verbatim, so a device cert scoped to "/api" could
+	// otherwise send "/api/../admin" (or its %2e%2e form, already decoded
+	// into Path here), pass the prefix check, and have opencode resolve it
+	// back to "/admin". A real SSE/API client never sends "..", "." or "//"
+	// segments, so rejecting the un-clean form closes the bypass without
+	// silently rewriting request semantics.
+	if !pathIsNormalized(r.URL.Path) {
+		p.reject(w, http.StatusBadRequest, "rejected request from %s: non-normalized path %q", GetPeerSubjectCN(state), r.URL.Path)
+		return
+	}
+
+	// A configured path allowlist bounds what a device cert can reach: a
+	// request outside it is refused here, before a tunnel stream is ever
+	// opened. An empty allowlist permits everything (the default).
+	if !pathAllowed(p.policy.AllowedPathPrefixes, r.URL.Path) {
+		p.reject(w, http.StatusForbidden, "rejected request from %s: path %q is not on the allowlist", GetPeerSubjectCN(state), r.URL.Path)
+		return
+	}
+
+	// Per-certificate fairness: refuse before taking a global slot so one
+	// identity's flood can't consume the shared budget. serialOf keys on the
+	// leaf that already passed the role check above.
+	serial := serialOf(leaf)
+	if !p.perCert.acquire(serial) {
+		p.reject(w, http.StatusServiceUnavailable, "rejected request from %s: per-certificate stream cap of %d reached", GetPeerSubjectCN(state), p.policy.MaxStreamsPerCert)
+		return
+	}
+	defer p.perCert.release(serial)
+
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	default:
+		p.reject(w, http.StatusServiceUnavailable, "rejected request from %s: %d concurrent requests already in flight", GetPeerSubjectCN(state), p.policy.MaxConcurrentStreams)
+		return
+	}
+
+	// Bound the stream's lifetime so a genuinely-infinite SSE hog is
+	// eventually recycled (and can't outlive its cert's revocation forever),
+	// while normal long polls under the cap survive. Zero leaves it unbounded.
+	if p.policy.MaxStreamDuration > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), p.policy.MaxStreamDuration)
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
+
+	// Cap the request body so a single device can't stream an unbounded
+	// upload through the tunnel. Only the body is bounded; the SSE
+	// response stream back the other way is untouched.
+	r.Body = http.MaxBytesReader(w, r.Body, p.policy.MaxRequestBytes)
+	p.proxy.ServeHTTP(w, r)
+}
+
+// reject logs the formatted line and answers the request with status's
+// standard text. Every refusal branch is a one-liner: the log line is the
+// detail, the status is the contract.
+func (p *RemoteProxy) reject(w http.ResponseWriter, status int, format string, args ...any) {
+	p.l.Printf(format, args...)
+	http.Error(w, http.StatusText(status), status)
 }
 
 // pathAllowed reports whether path is permitted by prefixes. An empty
