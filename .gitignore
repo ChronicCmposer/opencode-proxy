@@ -11,3 +11,4 @@ plans/
 out.txt
 grant-buildkit-access.sh
 gh_auth_login.py
+/deploy-state.json
