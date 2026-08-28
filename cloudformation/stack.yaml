@@ -266,6 +266,7 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -eux
+          # boot-nonce: 2026-08-28-2 — change in UserData forces instance replacement so the EIP-SAN server cert is fetched at boot
           # Boot signal via the AWS CLI (installed above) instead of
           # cfn-signal: the aws-cfn-bootstrap helper scripts are not reliably
           # present on Amazon Linux 2023.
