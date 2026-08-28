@@ -12,9 +12,12 @@ EnvironmentFile=/etc/opencode-proxy/local.env
 ExecStartPre=-/usr/bin/ctr task kill opencode-proxy-local
 ExecStartPre=-/usr/bin/ctr task rm opencode-proxy-local
 ExecStartPre=-/usr/bin/ctr container rm opencode-proxy-local
+# ctr run positional args REPLACE the image ENTRYPOINT — the binary must be
+# named explicitly as the first argument (Dockerfile ENTRYPOINT is ignored).
 ExecStart=/usr/bin/ctr run --rm --net-host \
   --mount type=bind,src=/etc/opencode-proxy,dst=/etc/opencode-proxy,options=rbind:ro \
   ${IMAGE_REF} opencode-proxy-local \
+  /opencode-proxy \
   --local --remote-url ${REMOTE_URL} \
   --opencode-url ${OPENCODE_URL} \
   --config /etc/opencode-proxy/config.json \
