@@ -55,7 +55,7 @@ fact with `gh release edit <tag> --prerelease`.
 Known caveat: the `/releases/latest/download/opencode-proxy.tar` URL (used by
 `scripts/update-image.sh` and `cloudformation/stack.yaml` `ImageTarURL`)
 returns 404 while the newest release is a prerelease — it resolves only after a
-stable release is published (as of 2026-08-28 the latest stable is `v0.0.2`).
+stable release is published (as of 2026-08-28 the latest stable is `v0.0.4`).
 
 ## Deployment & operations (established 2026-08-28)
 
