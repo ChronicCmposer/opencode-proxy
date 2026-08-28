@@ -152,9 +152,67 @@ Resources:
     Properties:
       Roles: [!Ref InstanceRole]
 
+  # Self-contained VPC: the template creates its own network so it does not
+  # depend on the account having a default VPC (AWS rejects SG creation
+  # without VpcId when no default VPC exists). One public subnet + IGW, egress
+  # left at the security group's default allow-all — mTLS and the SSH
+  # AdminCidr rule are the only access controls.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "opencode-proxy-vpc-${DomainName}" }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "opencode-proxy-igw-${DomainName}" }
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub "opencode-proxy-subnet-${DomainName}" }
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "opencode-proxy-rt-${DomainName}" }
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      VpcId: !Ref Vpc
       GroupDescription: opencode-proxy remote host
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -181,6 +239,7 @@ Resources:
       ImageId: !Ref LatestAmiId
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet
       SecurityGroups: [!Ref SecurityGroup]
       # Require IMDSv2 (token-authenticated metadata): the instance is
       # internet-facing on :443 and its role can read the server private key
