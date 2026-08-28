@@ -39,8 +39,7 @@ when facts change — don't let it drift into aspirational documentation.
 - `signing/release.key` exists
 - buildkitd is reachable
 
-Keep the tree clean: `plans/` and sandbox strays (`1`, `out.txt`,
-`grant-buildkit-access.sh`, `gh_auth_login.py`) are gitignored. Do not let new
+Keep the tree clean: `plans/`, `/deploy-state.json`, `/delete-stack.sh`, `/step-*.sh` and sandbox strays (`1`, `out.txt`, `grant-buildkit-access.sh`, `gh_auth_login.py`) are gitignored. Do not let new
 untracked files accumulate — a squash's `git add -A` sweeps them into the commit,
 and `release.sh` refuses a dirty tree.
 
@@ -53,11 +52,41 @@ the reflog).
 Pre-release workflow: `make release` has no prerelease flag — mark it after the
 fact with `gh release edit <tag> --prerelease`.
 
-Known caveat: while only a pre-release exists,
-`https://github.com/ChronicCmposer/opencode-proxy/releases/latest/download/opencode-proxy.tar`
-returns 404. `scripts/update-image.sh` and `cloudformation/stack.yaml`
-(`ImageTarURL`) depend on that URL — it resolves only after a stable release
-(e.g. `v0.0.2`).
+Known caveat: the `/releases/latest/download/opencode-proxy.tar` URL (used by
+`scripts/update-image.sh` and `cloudformation/stack.yaml` `ImageTarURL`)
+returns 404 while the newest release is a prerelease — it resolves only after a
+stable release is published (as of 2026-08-28 the latest stable is `v0.0.2`).
+
+## Deployment & operations (established 2026-08-28)
+
+- **Deployed state is authoritative in `deploy-state.json`** at the repo root
+  (stack, domain, EIP, instance_id, repo_ref pin). Cross-check it before any
+  deploy; never invent deployment constants from memory.
+- **RepoRef pins commit SHAs, not tags.** Tags drift from main: the `v0.0.2`
+  tag ships systemd units with the ctr-run bug (fix = `6ebd4d2`; the deployed
+  stack and the local VM both pin that SHA). Verify what a tag actually
+  contains (`git show <tag>:systemd/...`) before deploying from it, and prefer
+  a reviewed commit SHA over a tag name.
+- **Boot SUCCESS != healthy service.** CloudFormation's `CREATE_COMPLETE` and
+  the boot signal only prove UserData exited 0. After any instance or VM
+  deploy, verify the service is actually listening: `systemctl status <unit>`
+  / `journalctl -u <unit>` / `ss -tlnp` / `ctr task ls`.
+- **`ctr run` positional args replace the image ENTRYPOINT.** The binary must
+  be named explicitly as the first arg after the container name:
+  `ctr run ... ${IMAGE_REF} <name> /opencode-proxy --remote ...`. Both systemd
+  units do this and carry a comment — preserve it in any edit.
+- **CloudFormation mechanics:** `cloudformation/deploy.sh` passes every
+  parameter explicitly (InstanceType always pinned; default t4g.micro). A
+  template parameter Default change does NOT reach an existing stack. A
+  UserData change is stop/start, NOT replacement; an InstanceType change is
+  the reliable replacement trigger. Never terminate an instance out-of-band —
+  CloudFormation can then never update that resource (delete + recreate only).
+  `UPDATE_ROLLBACK_FAILED` recovery:
+  `aws cloudformation continue-update-rollback --stack-name <stack> --resources-to-skip Instance`.
+- **The TLS gate is strict mTLS.** A bare `curl` always fails the handshake by
+  design. All probes must present a client cert (`pki/out/phone.crt` +
+  `phone.key`); the 503 + `X-Opencode-Proxy-Remote-Version` response only
+  appears after a valid client-cert handshake.
 
 ## Signing key custody
 
@@ -88,3 +117,7 @@ values in argv, stdout, logs, or reports.
   completing.
 - Keep a running state summary and compress closed phases to control context
   during long sessions.
+- At deploy gates, require verbatim outputs from the human (`out.txt`), not
+  status words — terse reports have hidden real failures. Bake exact commands
+  into gitignored `step-*.sh` scripts rather than pasting commands into chat;
+  copy-paste/history silently drops arguments.
