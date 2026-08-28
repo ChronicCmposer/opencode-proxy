@@ -247,7 +247,7 @@ Resources:
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref InstanceProfile
       SubnetId: !Ref PublicSubnet
-      SecurityGroups: [!Ref SecurityGroup]
+      SecurityGroupIds: [!Ref SecurityGroup]
       # Require IMDSv2 (token-authenticated metadata): the instance is
       # internet-facing on :443 and its role can read the server private key
       # from SSM, so an SSRF that reaches 169.254.169.254 must not be able to
