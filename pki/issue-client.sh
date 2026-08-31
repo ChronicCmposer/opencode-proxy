@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Usage: issue-client.sh <device-name>   (e.g. "phone", "ipad")
 #
-# Also emits <name>.p12 (for manual import) and <name>.mobileconfig (an
-# Apple profile bundling CA trust + device identity in one install, so
-# Safari stops prompting for the cert).
+# Also emits <name>.mobileconfig (an Apple profile bundling CA trust + device
+# identity in one install, so Safari stops prompting for the cert). The
+# intermediate <name>.p12 is an input to that profile, not a deliverable —
+# it's shredded on exit.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -41,7 +42,13 @@ shred_or_rm() {
 trap 'shred_or_rm "$p12"' EXIT
 
 p12pass="$(openssl rand -base64 18)"
+# Apple's profile installer parses this embedded p12 with the same
+# SecKeychainItemImport machinery that rejects some OpenSSL 3.x default cipher
+# suites — surfacing as "MAC verification failed" / "The certificate could not
+# be verified". PBE-SHA1-3DES plus an SHA-1 MAC is the maximally-compatible
+# combination for both LibreSSL (macOS's system openssl) and OpenSSL 3.x.
 openssl pkcs12 -export -inkey "$key" -in "$crt" -certfile "$CA_CERT" \
+  -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
   -name "$name" -passout "pass:$p12pass" -out "$p12"
 chmod 600 "$p12"
 
@@ -106,3 +113,5 @@ echo "— treat the .mobileconfig itself as a secret and delete it after install
 echo "After install: Settings > General > VPN & Device Management > install the profile,"
 echo "then Settings > General > About > Certificate Trust Settings > enable full trust"
 echo "for the opencode-proxy CA."
+echo "macOS: install via System Settings > General > VPN & Device Management (accept 'not signed'),"
+echo "then Keychain Access > set the opencode-proxy CA to Always Trust."

@@ -111,9 +111,11 @@ timers) point at `.../releases/latest/download/opencode-proxy.tar` and its
 
 `issue-client.sh` also emits `pki/out/phone.mobileconfig` — an Apple
 configuration profile bundling CA trust and the device identity in one
-install, and `phone.p12` for manual import elsewhere. The profile embeds the
-p12 password in plaintext (Apple's format requires it), so treat the
-`.mobileconfig` itself as a secret: transfer it, install it, then delete it.
+install. Its embedded p12 uses legacy-compatible algorithms (`PBE-SHA1-3DES`
++ SHA-1 MAC) so the same profile installs on both iOS and macOS. The profile
+embeds the p12 password in plaintext (Apple's format requires it), so treat
+the `.mobileconfig` itself as a secret: transfer it, install it, then delete
+it.
 See `pki/renew.sh` — server and tunnel certs are valid **90 days**, while
 **device certs are valid 30 days** (they are the most-copied, highest-risk
 credential, so their exposure window is kept short); the CA itself
@@ -327,6 +329,20 @@ there's a window where they can briefly disagree.
 5. On cellular, open `https://code.example.com`. Safari will prompt to pick
    a client certificate — choose the one you just installed — then present
    opencode's own login (the `OPENCODE_SERVER_PASSWORD` from step 4).
+
+### Connect from a Mac
+
+- The same `pki/out/<name>.mobileconfig` installs on macOS. Transfer it and
+  open it — it will queue as a "downloaded profile"; go to System Settings →
+  General → VPN & Device Management → Downloaded → Install, and accept the
+  "not signed" warning (the profile is unsigned).
+- Then open Keychain Access → login/System, find the "opencode-proxy CA"
+  certificate, and set it to **Always Trust** (or open the profile and trust
+  it).
+- Delete the `.mobileconfig` file afterward (same plaintext-secret reason as
+  iOS).
+- Open `https://code.example.com`; the browser prompts to pick a client
+  certificate.
 
 ## Tuning
 
